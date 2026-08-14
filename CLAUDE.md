@@ -12,6 +12,10 @@ Product spec: `plan.md`. Platform/security rules: `rules.md`. Progress log: `doc
 - `npm run build` — compile server to `server/dist/`, client to `dist/`
 - `npm start` — serve built app from Express (`PORT` from `.env`)
 
+Server lifecycle:
+
+- Any development, preview, or smoke-test process started for a task must be stopped when the task finishes. Before handing off, verify that this project's server/client ports (normally 3456 and 5173) are no longer listening so the next run does not fail with `EADDRINUSE`.
+
 ## Environment
 
 `.env` (git-ignored, copy from `.env.example`) — API key lives ONLY on the server:
