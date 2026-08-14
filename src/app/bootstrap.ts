@@ -23,6 +23,11 @@ import {
   buildFishLineAttachment,
 } from "../world/hardcoded-objects.js";
 import type { Attachment } from "../character/attachments.js";
+import { buildAttachmentFromObject } from "../character/attachments.js";
+import { captureViewport, captureDelta } from "../ai/capture.js";
+import { analyzeDrawing } from "../ai/ai-client.js";
+import { imageToWorldX, imageToWorldY, worldToImage, type CaptureMapping } from "../ai/normalization.js";
+import type { DrawingAnalysis } from "../ai/schemas.js";
 import { createSessionStorage } from "../storage/indexed-db.js";
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO, INACTIVITY_MS } from "./constants.js";
 
@@ -69,6 +74,9 @@ let pond: PondScene | null = null;
 let walker: Walker | null = null;
 let walking = false;
 let awaitingGoalId: string | null = null;
+let checkpoint = 0;
+let analysisInFlight = false;
+let pendingDetected: DrawingAnalysis | null = null;
 let lastPencil: PencilEvent | null = null;
 let pencilDown = false;
 let idleTimer: number | null = null;
@@ -162,28 +170,132 @@ function showStoryBubble(text: string): void {
 
 function beginAwaitingDrawing(goalId: string): void {
   awaitingGoalId = goalId;
+  checkpoint = store.count();
+  analysisInFlight = false;
   appState.setMode("awaiting");
 }
 
-function resolveDrawingAttempt(): void {
-  if (awaitingGoalId === "draw_shoes") {
-    awaitingGoalId = null;
-    quest.trigger({
-      type: "drawing_validated",
-      action: "equip_shoes",
-      reactionBubble: "وای! یکم بزرگن، ولی عاشقشونم!",
-      emotion: "excited",
+function jointsInImageCoords(): Array<{ id: string; x: number; y: number }> {
+  const viewport = getViewport();
+  const mapping = {
+    scale: 1024 / Math.max(viewport.width, viewport.height),
+    cameraX: camera.state.x,
+    width: 0,
+    height: 0,
+  };
+  const result: Array<{ id: string; x: number; y: number }> = [];
+  if (!rigRuntime) return result;
+  for (const id of ["left_foot", "right_foot", "left_hand", "right_hand"] as const) {
+    const rest = rigRuntime.restJoint(id);
+    if (rest) {
+      const img = worldToImage(rest, mapping);
+      result.push({ id, x: img.x, y: img.y });
+    }
+  }
+  return result;
+}
+
+async function resolveDrawingAttempt(): Promise<void> {
+  const goalId = awaitingGoalId;
+  if (!goalId || analysisInFlight || !rigRuntime) return;
+  const newStrokes = store
+    .all()
+    .slice(checkpoint)
+    .filter((s) => s.active && s.entityId === null);
+  if (newStrokes.length === 0) return;
+
+  analysisInFlight = true;
+  awaitingGoalId = null;
+  appState.setMode("analyzing");
+  bubble.show("بذار ببینم چی کشیدی…", headAnchorScreen());
+
+  try {
+    const viewport = getViewport();
+    const full = captureViewport(store, camera, viewport, groundPath, {
+      targetMaxDim: 1024,
+      includeSampleCharacter: false,
     });
-  } else if (awaitingGoalId === "draw_fishing_tool") {
-    awaitingGoalId = null;
-    quest.trigger({
-      type: "drawing_validated",
-      action: "equip_tool",
-      reactionBubble: "عالیه! حالا ببین چطور ماهی می‌گیرم!",
-      emotion: "excited",
-    });
+    const delta = captureDelta(newStrokes, 512);
+
+    const isShoes = goalId === "draw_shoes";
+    const goal = isShoes
+      ? "The character needs shoes on its bare feet so it can walk."
+      : "The character needs a fishing rod to catch a fish at the pond.";
+    const acceptedCategories = isShoes
+      ? ["shoe", "boot", "skate", "slipper"]
+      : ["fishing_rod", "net", "spear", "magnet"];
+
+    const root = rigRuntime.restJoint("root");
+    const worldSummary = isShoes
+      ? `Character stands on the ground line. Root at (${Math.round(root?.x ?? 0)}, ${Math.round(root?.y ?? 0)}). The pond is far to the right.`
+      : `Character stands at the pond edge. Root at (${Math.round(root?.x ?? 0)}, ${Math.round(root?.y ?? 0)}). Pond center at (${Math.round(pond?.x ?? 0)}, ${Math.round(pond?.y ?? 0)}). A fish swims in the pond.`;
+
+    const result = await analyzeDrawing(
+      full.dataUrl,
+      delta,
+      { width: full.mapping.width, height: full.mapping.height },
+      goal,
+      jointsInImageCoords(),
+      worldSummary,
+      acceptedCategories,
+    );
+    const analysis = result.analysis;
+    if (
+      analysis.matchesGoal &&
+      (analysis.mappedAction === "equip_shoes" || analysis.mappedAction === "equip_tool")
+    ) {
+      pendingDetected = analysis;
+      lastFullMapping = full.mapping;
+      quest.trigger({
+        type: "drawing_validated",
+        action: analysis.mappedAction,
+        reactionBubble: analysis.reaction.bubble,
+        emotion: analysis.reaction.emotion,
+      });
+    } else {
+      quest.trigger({
+        type: "drawing_invalid",
+        message: analysis.reaction.bubble || undefined,
+      });
+    }
+  } catch {
+    awaitingGoalId = goalId;
+    bubble.show("هوم… این یکی رو نفهمیدم. یه بار دیگه؟", headAnchorScreen());
+    window.setTimeout(() => {
+      if (bubble.isVisible()) bubble.hide();
+    }, 2400);
+  } finally {
+    analysisInFlight = false;
   }
 }
+
+function equipDetectedObjects(analysis: DrawingAnalysis, mapping: CaptureMapping): void {
+  if (!rigRuntime) return;
+  const added: Attachment[] = [];
+  analysis.objects.forEach((object, index) => {
+    const objectWithWorld = {
+      ...object,
+      anchor:
+        object.anchor === null
+          ? null
+          : { x: imageToWorldX(object.anchor.x, mapping), y: imageToWorldY(object.anchor.y, mapping) },
+      boundingBox: {
+        x: imageToWorldX(object.boundingBox.x, mapping),
+        y: imageToWorldY(object.boundingBox.y, mapping),
+        width: object.boundingBox.width / mapping.scale,
+        height: object.boundingBox.height / mapping.scale,
+      },
+    };
+    const attachment = buildAttachmentFromObject(objectWithWorld, store, idMap, rigRuntime!, index);
+    if (attachment) added.push(attachment);
+  });
+  if (added.length > 0) {
+    attachments.push(...added);
+    pendingDetected = null;
+  }
+}
+
+let lastFullMapping: CaptureMapping | null = null;
 
 function attachHardcodedShoes(): void {
   if (!rigRuntime) return;
@@ -250,7 +362,11 @@ quest.onCommand = (command: StoryCommand) => {
       beginAwaitingDrawing(command.goalId);
       break;
     case "attach_shoes":
-      attachHardcodedShoes();
+      if (pendingDetected && lastFullMapping) {
+        equipDetectedObjects(pendingDetected, lastFullMapping);
+      } else {
+        attachHardcodedShoes();
+      }
       break;
     case "start_walk":
       startWalk();
@@ -263,7 +379,12 @@ quest.onCommand = (command: StoryCommand) => {
       }
       break;
     case "attach_rod":
-      attachHardcodedRod();
+      if (pendingDetected && lastFullMapping) {
+        attachments = attachments.filter((a) => a.id.startsWith("detected_") === false);
+        equipDetectedObjects(pendingDetected, lastFullMapping);
+      } else {
+        attachHardcodedRod();
+      }
       break;
     case "cast_sequence":
       castSequence();

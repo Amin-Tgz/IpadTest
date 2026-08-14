@@ -7,6 +7,7 @@ import { config, type ServerConfig } from "./config.js";
 import type { AIProvider } from "./ai/provider.js";
 import { OpenAICompatibleProvider } from "./ai/openai-compatible.js";
 import { analyzeCharacterRoute } from "./routes/analyze-character.js";
+import { analyzeDrawingRoute } from "./routes/analyze-drawing.js";
 import { configPublicRoute } from "./routes/config-public.js";
 import { rateLimiter } from "./middleware/rate-limit.js";
 
@@ -33,8 +34,10 @@ export function createApp(deps: AppDeps = {}) {
 
   if (deps.enableRateLimit ?? true) {
     app.use("/api/character", rateLimiter(12, 60_000));
+    app.use("/api/drawing", rateLimiter(20, 60_000));
   }
   app.use("/api/character/analyze", analyzeCharacterRoute(provider, cfg));
+  app.use("/api/drawing/analyze", analyzeDrawingRoute(provider, cfg));
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof SyntaxError) {

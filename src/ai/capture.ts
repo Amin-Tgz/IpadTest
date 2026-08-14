@@ -1,4 +1,4 @@
-import type { StrokeStore } from "../drawing/stroke-store.js";
+import type { Stroke, StrokeStore } from "../drawing/stroke-store.js";
 import type { Camera } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO } from "../app/constants.js";
@@ -13,6 +13,54 @@ export interface CapturedView {
   dataUrl: string;
   mapping: CaptureMapping;
   mime: "image/png" | "image/webp";
+}
+
+export function captureDelta(
+  strokes: Stroke[],
+  targetMaxDim: number,
+): string | null {
+  if (strokes.length === 0) return null;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const stroke of strokes) {
+    for (const p of stroke.points) {
+      xs.push(p.x);
+      ys.push(p.y);
+    }
+  }
+  if (xs.length === 0) return null;
+  const padding = 40;
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  const width = maxX - minX + padding * 2;
+  const height = maxY - minY + padding * 2;
+
+  const scale = targetMaxDim / Math.max(width, height);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.fillStyle = PALETTE.background;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.translate(-(minX - padding) * scale, -(minY - padding) * scale);
+  ctx.scale(scale, scale);
+  for (const stroke of strokes) {
+    if (!stroke.active) continue;
+    ctx.strokeStyle = stroke.color;
+    ctx.lineWidth = stroke.baseWidth;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    stroke.points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    ctx.stroke();
+  }
+  ctx.restore();
+  return canvas.toDataURL("image/png");
 }
 
 export function captureViewport(
