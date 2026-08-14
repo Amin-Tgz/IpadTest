@@ -20,12 +20,19 @@ export interface PointerInputCallbacks {
   onPencilDown?: (event: PencilEvent) => void;
 }
 
+export interface PointerInterceptor {
+  down: (world: { x: number; y: number }, e: PointerEvent) => boolean;
+  move: (world: { x: number; y: number }, e: PointerEvent) => boolean;
+  up: (world: { x: number; y: number }, e: PointerEvent) => void;
+}
+
 export class PointerInput {
   private current: Stroke | null = null;
   private lastPoint: StrokePoint | null = null;
   private sessionStart = performance.now();
   private groupOpenAt: number | null = null;
   private groupId: string | null = null;
+  interceptor: PointerInterceptor | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -65,8 +72,12 @@ export class PointerInput {
 
   private onPointerDown = (e: PointerEvent): void => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
-    this.canvas.setPointerCapture(e.pointerId);
     const p = this.toWorld(e.clientX, e.clientY);
+    if (this.interceptor && this.interceptor.down(p, e)) {
+      this.canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+    this.canvas.setPointerCapture(e.pointerId);
     const pressure = this.normalizePressure(e);
     const now = performance.now() - this.sessionStart;
 
@@ -97,6 +108,8 @@ export class PointerInput {
     const pressure = this.normalizePressure(e);
     this.callbacks.onPencilMove?.({ x: p.x, y: p.y, pressure });
 
+    if (this.interceptor && this.interceptor.move(p, e)) return;
+
     if (!this.current || !this.lastPoint) return;
     const dist = Math.hypot(p.x - this.lastPoint.x, p.y - this.lastPoint.y);
     if (dist < this.options.minPointDistance) return;
@@ -112,6 +125,11 @@ export class PointerInput {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
+    const p = this.toWorld(e.clientX, e.clientY);
+    if (this.interceptor && this.current === null) {
+      this.interceptor.up(p, e);
+      return;
+    }
     if (!this.current) return;
     if (this.current.points.length > 1) {
       this.store.add(this.current);

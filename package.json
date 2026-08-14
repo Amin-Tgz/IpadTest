@@ -25,6 +25,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.5",
     "concurrently": "^9.1.2",
+    "fake-indexeddb": "^6.2.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vite": "^6.0.7",

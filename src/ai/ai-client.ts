@@ -1,4 +1,4 @@
-import type { CharacterAnalyzeResult, DrawingAnalyzeResult, DrawingAnalysis } from "./schemas";
+import type { CharacterAnalyzeResult, DrawingAnalyzeResult, DrawingAnalysis } from "./schemas.js";
 
 export class AiError extends Error {
   constructor(message: string, readonly status?: number, readonly code?: string) {

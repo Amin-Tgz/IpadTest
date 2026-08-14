@@ -1,12 +1,12 @@
-import type { StrokeStore } from "../drawing/stroke-store";
-import type { Camera } from "../world/camera";
-import type { GroundPath } from "../world/ground-path";
-import type { SpeechBubble } from "../story/speech-bubble";
-import { captureViewport } from "../ai/capture";
-import { analyzeCharacter } from "../ai/ai-client";
-import { imageToWorldX, imageToWorldY, type CaptureMapping } from "../ai/normalization";
-import type { CharacterAnalysis } from "../ai/schemas";
-import { PALETTE } from "../app/constants";
+import type { StrokeStore } from "../drawing/stroke-store.js";
+import type { Camera } from "../world/camera.js";
+import type { GroundPath } from "../world/ground-path.js";
+import type { SpeechBubble } from "../story/speech-bubble.js";
+import { captureViewport } from "../ai/capture.js";
+import { analyzeCharacter } from "../ai/ai-client.js";
+import { imageToWorldX, imageToWorldY, type CaptureMapping } from "../ai/normalization.js";
+import type { CharacterAnalysis, CharacterAnalyzeResult } from "../ai/schemas.js";
+import { PALETTE } from "../app/constants.js";
 
 export type SpikeStatus = "idle" | "analyzing" | "done" | "failed";
 
@@ -47,8 +47,12 @@ export class AnalysisSpike {
     return this.store.all().some((s) => s.entityId === null);
   }
 
-  async requestAnalyze(includeSample: boolean): Promise<void> {
-    if (this.inFlight) return;
+  getMapping(): CaptureMapping | null {
+    return this.mapping;
+  }
+
+  async requestAnalyze(includeSample: boolean): Promise<CharacterAnalyzeResult | null> {
+    if (this.inFlight) return null;
     this.inFlight = true;
     this.status = "analyzing";
     this.analysis = null;
@@ -71,12 +75,15 @@ export class AnalysisSpike {
       this.mapping = captured.mapping;
       this.applyAnalysis(result.analysis);
       this.status = "done";
+      this.onStateChange();
+      return result;
     } catch (error) {
       this.status = "failed";
       this.bubble.show("هوم… هنوز خوب نمی‌بینمت. یه بار دیگه امتحان کنیم؟", this.headAnchor());
+      this.onStateChange();
+      return null;
     } finally {
       this.inFlight = false;
-      this.onStateChange();
     }
   }
 

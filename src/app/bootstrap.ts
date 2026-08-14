@@ -2,11 +2,15 @@ import { AppStateController } from "./app-state.js";
 import { StrokeStore } from "../drawing/stroke-store.js";
 import { StrokeRenderer } from "../drawing/stroke-renderer.js";
 import { PointerInput, type PencilEvent } from "../drawing/pointer-input.js";
+import { IdMap } from "../drawing/id-map.js";
 import { Camera } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { SpeechBubble } from "../story/speech-bubble.js";
 import { buildSampleCharacter } from "./sample-character.js";
 import { AnalysisSpike } from "../character/analysis-spike.js";
+import { JointEditor } from "../character/joint-editor.js";
+import { buildManifest } from "../character/character-manifest.js";
+import { createSessionStorage } from "../storage/indexed-db.js";
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO, INACTIVITY_MS } from "./constants.js";
 
 const appEl = document.getElementById("app");
@@ -27,16 +31,17 @@ const store = new StrokeStore();
 const camera = new Camera();
 const renderer = new StrokeRenderer();
 const bubble = new SpeechBubble(appEl);
-const spike = new AnalysisSpike(
-  store,
-  camera,
-  () => {
-    const { viewportWidth, viewportHeight } = appState.get();
-    return { width: viewportWidth, height: viewportHeight };
-  },
-  () => groundPath,
-  bubble,
-);
+const idMap = new IdMap();
+const storage = createSessionStorage();
+
+const getViewport = () => {
+  const { viewportWidth: width, viewportHeight: height } = appState.get();
+  return { width, height };
+};
+
+const editor = new JointEditor(store, getViewport);
+
+const spike = new AnalysisSpike(store, camera, getViewport, () => groundPath, bubble);
 
 function resize(): void {
   const dpr = window.devicePixelRatio || 1;
@@ -71,10 +76,19 @@ let lastPencil: PencilEvent | null = null;
 let pencilDown = false;
 let idleTimer: number | null = null;
 
-function showIdleHint(): void {
-  if (hintVisible || store.count() > 1) return;
-  hintVisible = true;
-  hintEl.style.opacity = "1";
+function hideRevive(): void {
+  reviveEl.style.opacity = "0";
+  reviveEl.style.pointerEvents = "none";
+}
+
+function hideSampleDemo(): void {
+  sampleDemoEl.style.opacity = "0";
+  sampleDemoEl.style.pointerEvents = "none";
+}
+
+function hideStageButton(): void {
+  stageButton.style.opacity = "0";
+  stageButton.style.pointerEvents = "none";
 }
 
 const hintEl = document.createElement("div");
@@ -101,34 +115,49 @@ hintEl.textContent = "یک شخصیت روی خط بکش؛ یک سر، دو دس
 appEl.appendChild(hintEl);
 let hintVisible = false;
 
-function scheduleIdleAction(): void {
-  if (idleTimer !== null) window.clearTimeout(idleTimer);
-  idleTimer = window.setTimeout(() => {
-    idleTimer = null;
-    if (spike.status === "analyzing") return;
-    if (spike.userHasDrawn() && spike.status !== "done") {
-      reviveEl.style.opacity = "1";
-      reviveEl.style.pointerEvents = "auto";
-      return;
-    }
-    const { viewportWidth: w, viewportHeight: h } = appState.get();
-    const anchor = camera.worldToScreen({
-      x: w * 0.34,
-      y: h * BASE_LINE_Y_RATIO - 200,
-    });
-    bubble.show("این خط برای پای برهنه‌ام خیلی زبره…", anchor);
-    window.setTimeout(() => {
-      if (bubble.isVisible()) {
-        bubble.show("می‌تونی برام کفش بکشی؟", anchor);
-      }
-    }, 3400);
-  }, INACTIVITY_MS);
-}
+const stageTitleEl = document.createElement("div");
+stageTitleEl.style.cssText = [
+  "position:absolute",
+  "z-index:32",
+  "top:max(18px, env(safe-area-inset-top))",
+  "left:50%",
+  "transform:translateX(-50%)",
+  "color:#D8F6FF",
+  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
+  "font-size:15px",
+  "background:rgba(16,59,70,0.85)",
+  "padding:8px 18px",
+  "border-radius:999px",
+  "border:1px solid rgba(216,246,255,0.3)",
+  "direction:rtl",
+  "opacity:0",
+  "transition:opacity 300ms",
+  "pointer-events:none",
+].join(";");
+appEl.appendChild(stageTitleEl);
 
-function hideRevive(): void {
-  reviveEl.style.opacity = "0";
-  reviveEl.style.pointerEvents = "none";
-}
+const stageButton = document.createElement("button");
+stageButton.style.cssText = [
+  "position:absolute",
+  "z-index:35",
+  "bottom:max(28px, env(safe-area-inset-bottom))",
+  "left:50%",
+  "transform:translateX(-50%)",
+  "color:#103B46",
+  "background:#F7F5EE",
+  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
+  "font-size:16px",
+  "font-weight:600",
+  "padding:10px 30px",
+  "border-radius:999px",
+  "border:none",
+  "direction:rtl",
+  "opacity:0",
+  "transition:opacity 300ms",
+  "pointer-events:none",
+  "box-shadow:0 6px 20px rgba(0,0,0,0.3)",
+].join(";");
+appEl.appendChild(stageButton);
 
 const reviveEl = document.createElement("button");
 reviveEl.style.cssText = [
@@ -150,10 +179,6 @@ reviveEl.style.cssText = [
   "pointer-events:none",
 ].join(";");
 reviveEl.textContent = "زنده‌اش کن";
-reviveEl.addEventListener("click", () => {
-  hideRevive();
-  void spike.requestAnalyze(false);
-});
 appEl.appendChild(reviveEl);
 
 const sampleDemoEl = document.createElement("button");
@@ -174,8 +199,89 @@ sampleDemoEl.style.cssText = [
   "transition:opacity 300ms",
 ].join(";");
 sampleDemoEl.textContent = "تحلیل شخصیت نمونه";
-sampleDemoEl.addEventListener("click", () => void spike.requestAnalyze(true));
 appEl.appendChild(sampleDemoEl);
+
+const STAGE_LABELS: Record<string, string> = {
+  box: "۱) محدودهٔ شخصیت را تنظیم کن",
+  strokes: "۲) خط‌های شخصیت را انتخاب کن (ضربه روی خط)",
+  joints: "۳) مفصل‌ها را جابه‌جا کن",
+  done: "آماده‌ای؟",
+};
+
+function enterEditorMode(box: { x: number; y: number; width: number; height: number }, includeSample: boolean): void {
+  appState.setMode("setup");
+  const mapping = spike.getMapping();
+  if (!mapping || !spike.analysis) return;
+  const filter = includeSample ? (s: { entityId: string | null }) => s.entityId === "sample_character" : undefined;
+  const manifest = buildManifest(spike.analysis, mapping, store, idMap, filter);
+  editor.begin(box, manifest, filter);
+  hideRevive();
+  hideSampleDemo();
+  stageButton.textContent = "بعدی";
+  stageButton.style.opacity = "1";
+  stageButton.style.pointerEvents = "auto";
+}
+
+function startAnalysis(includeSample: boolean): void {
+  void spike.requestAnalyze(includeSample).then((result) => {
+    if (!result || !spike.analysis || !spike.boxWorld) return;
+    enterEditorMode(spike.boxWorld, includeSample);
+  });
+}
+
+function finalizeCharacter(): void {
+  const manifest = editor.manifestReady();
+  if (!manifest) {
+    bubble.show("مفصل‌ها هنوز یک پیکر درست نیستن…", headAnchorScreen());
+    return;
+  }
+  appState.setMode("live");
+  hideStageButton();
+  stageTitleEl.style.opacity = "0";
+  if (storage) void storage.saveManifest(manifest);
+  console.log("[pencil-ai] character manifest:", JSON.stringify(manifest, null, 2));
+  bubble.show("آها! پس تو این شکلی…", headAnchorScreen());
+}
+
+function headAnchorScreen(): { x: number; y: number } {
+  const { viewportWidth: w, viewportHeight: h } = appState.get();
+  return camera.worldToScreen({ x: w * 0.34, y: h * BASE_LINE_Y_RATIO - 200 });
+}
+
+reviveEl.addEventListener("click", () => startAnalysis(false));
+sampleDemoEl.addEventListener("click", () => startAnalysis(true));
+stageButton.addEventListener("click", () => {
+  editor.nextStage();
+});
+
+editor.onStageChange = (stage) => {
+  stageTitleEl.textContent = STAGE_LABELS[stage];
+  stageButton.textContent = stage === "joints" ? "زنده‌اش کن" : "بعدی";
+  if (stage === "done") {
+    hideStageButton();
+    finalizeCharacter();
+  }
+};
+
+function scheduleIdleAction(): void {
+  if (idleTimer !== null) window.clearTimeout(idleTimer);
+  idleTimer = window.setTimeout(() => {
+    idleTimer = null;
+    if (spike.status === "analyzing") return;
+    if (spike.userHasDrawn() && spike.status !== "done") {
+      reviveEl.style.opacity = "1";
+      reviveEl.style.pointerEvents = "auto";
+      return;
+    }
+    if (appState.get().mode !== "intro") return;
+    bubble.show("این خط برای پای برهنه‌ام خیلی زبره…", headAnchorScreen());
+    window.setTimeout(() => {
+      if (bubble.isVisible()) {
+        bubble.show("می‌تونی برام کفش بکشی؟", headAnchorScreen());
+      }
+    }, 3400);
+  }, INACTIVITY_MS);
+}
 
 const pointer = new PointerInput(canvas, store, camera, {
   onStrokeStart: () => {
@@ -183,14 +289,13 @@ const pointer = new PointerInput(canvas, store, camera, {
     hintEl.style.opacity = "0";
     hintVisible = false;
     hideRevive();
-    sampleDemoEl.style.opacity = "0";
-    sampleDemoEl.style.pointerEvents = "none";
+    hideSampleDemo();
     if (bubble.isVisible()) bubble.hide();
     if (idleTimer !== null) window.clearTimeout(idleTimer);
   },
   onStrokeEnd: () => {
     pencilDown = false;
-    scheduleIdleAction();
+    if (appState.get().mode === "intro") scheduleIdleAction();
   },
   onPencilMove: (e) => {
     lastPencil = e;
@@ -199,6 +304,22 @@ const pointer = new PointerInput(canvas, store, camera, {
     lastPencil = e;
   },
 });
+
+pointer.interceptor = {
+  down: (world) => {
+    if (appState.get().mode !== "setup") return false;
+    editor.pointerDown(world);
+    return editor.isDragging() || editor.stage === "strokes";
+  },
+  move: (world) => {
+    if (appState.get().mode !== "setup") return false;
+    editor.pointerMove(world);
+    return editor.isDragging();
+  },
+  up: (world) => {
+    editor.pointerUp();
+  },
+};
 
 function renderFrame(now: number): void {
   const { viewportWidth: w, viewportHeight: h } = appState.get();
@@ -218,11 +339,14 @@ function renderFrame(now: number): void {
     if (stroke.active) renderer.drawStroke(ctx, stroke, camera);
   }
 
-  spike.drawOverlay(ctx, camera);
+  if (appState.get().mode === "setup") {
+    editor.draw(ctx, camera);
+    stageTitleEl.style.opacity = "1";
+  }
 
   if (pencilDown && lastPencil) {
     const sp = camera.worldToScreen(lastPencil);
-    const pulse = 0.10 + 0.04 * Math.sin(now / 120);
+    const pulse = 0.1 + 0.04 * Math.sin(now / 120);
     const grad = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, 16);
     grad.addColorStop(0, `rgba(216,246,255,${pulse})`);
     grad.addColorStop(1, "rgba(216,246,255,0)");
@@ -244,7 +368,7 @@ appState.subscribe((state) => {
       }
     }, 1600);
   }
-  if (state.mode === "drawing" && hintVisible) {
+  if (state.mode === "live" && hintVisible) {
     hintEl.style.opacity = "0";
     hintVisible = false;
   }
@@ -259,4 +383,4 @@ window.setTimeout(() => {
   if (!spike.userHasDrawn()) scheduleIdleAction();
 }, 4000);
 
-console.log("[pencil-ai] phase 1 bootstrap ready");
+console.log("[pencil-ai] phase 2 bootstrap ready");

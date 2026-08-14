@@ -1,8 +1,8 @@
-import type { StrokeStore } from "../drawing/stroke-store";
-import type { Camera } from "../world/camera";
-import { GroundPath } from "../world/ground-path";
-import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO } from "../app/constants";
-import type { CaptureMapping } from "./normalization";
+import type { StrokeStore } from "../drawing/stroke-store.js";
+import type { Camera } from "../world/camera.js";
+import { GroundPath } from "../world/ground-path.js";
+import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO } from "../app/constants.js";
+import type { CaptureMapping } from "./normalization.js";
 
 export interface CaptureOptions {
   targetMaxDim: number;
