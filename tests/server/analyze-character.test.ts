@@ -63,6 +63,21 @@ describe("POST /api/character/analyze", () => {
     expect(provider.responses.length).toBe(0);
   });
 
+  it("returns the analysis for client fallback when AI segmentation repair is still empty", async () => {
+    const withoutRegions = JSON.parse(validCharacterJson()) as { character: { partRegions: unknown[] } };
+    withoutRegions.character.partRegions = [];
+    const text = JSON.stringify(withoutRegions);
+    provider.responses = [{ text, rawModel: "mock" }, { text, rawModel: "mock" }];
+    const res = await fetch(`${baseUrl}/api/character/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: pngDataUrl(), canvas: { width: 512, height: 512 } }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { analysis: { character: { partRegions: unknown[] } } };
+    expect(body.analysis.character.partRegions).toEqual([]);
+  });
+
   it("rejects malformed body", async () => {
     const res = await fetch(`${baseUrl}/api/character/analyze`, {
       method: "POST",

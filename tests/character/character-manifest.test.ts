@@ -5,10 +5,13 @@ import {
   ensureValidParents,
   migrateManifest,
   missingJoints,
+  buildManifest,
   type CharacterManifest,
   type JointManifest,
 } from "../../src/character/character-manifest.js";
 import type { CharacterAnalysis } from "../../src/ai/schemas.js";
+import { StrokeStore } from "../../src/drawing/stroke-store.js";
+import type { IdMap } from "../../src/drawing/id-map.js";
 
 const mapping = { scale: 2, cameraX: 100, width: 512, height: 512 };
 
@@ -130,5 +133,50 @@ describe("missingJoints", () => {
     expect(missing).toContain("head");
     expect(missing).toContain("left_shoulder");
     expect(missing).not.toContain("root");
+  });
+});
+
+describe("automatic body segmentation", () => {
+  it("builds skeleton regions when AI part polygons are missing", () => {
+    const store = new StrokeStore();
+    for (const [id, points] of [
+      ["left_arm_ink", [[60, 80], [45, 105], [35, 130]]],
+      ["right_arm_ink", [[140, 80], [155, 105], [165, 130]]],
+      ["torso_ink", [[100, 65], [100, 145]]],
+    ] as Array<[string, Array<[number, number]>]>) {
+      store.add({
+        id,
+        points: points.map(([x, y], index) => ({ x, y, pressure: 0.5, time: index })),
+        color: "#fff", baseWidth: 4, tool: "pen", createdAt: 0, worldSpace: true, entityId: null, active: true, groupId: null,
+      });
+    }
+    const noRegionAnalysis: CharacterAnalysis = {
+      version: "1.0",
+      character: {
+        type: "humanoid_line_character",
+        boundingBox: { x: 20, y: 20, width: 160, height: 180 },
+        pose: "front_or_three_quarter",
+        confidence: 0.9,
+        joints: [
+          { id: "root", x: 100, y: 145, parent: null, confidence: 1 },
+          { id: "torso", x: 100, y: 95, parent: "root", confidence: 1 },
+          { id: "neck", x: 100, y: 65, parent: "torso", confidence: 1 },
+          { id: "head", x: 100, y: 40, parent: "neck", confidence: 1 },
+          { id: "left_shoulder", x: 65, y: 80, parent: "torso", confidence: 1 },
+          { id: "left_elbow", x: 45, y: 105, parent: "left_shoulder", confidence: 1 },
+          { id: "left_hand", x: 35, y: 130, parent: "left_elbow", confidence: 1 },
+          { id: "right_shoulder", x: 135, y: 80, parent: "torso", confidence: 1 },
+          { id: "right_elbow", x: 155, y: 105, parent: "right_shoulder", confidence: 1 },
+          { id: "right_hand", x: 165, y: 130, parent: "right_elbow", confidence: 1 },
+        ],
+        face: {},
+        partRegions: [],
+      },
+    };
+    const idMap = { sampleStrokesInPolygon: () => new Set<string>() } as unknown as IdMap;
+    const manifest = buildManifest(noRegionAnalysis, { scale: 1, cameraX: 0, width: 200, height: 220 }, store, idMap);
+    expect(manifest.parts.find((part) => part.part === "left_arm")?.polygon).toBeDefined();
+    expect(manifest.parts.find((part) => part.part === "right_arm")?.strokeIds).toContain("right_arm_ink");
+    expect(manifest.parts.find((part) => part.part === "torso")?.strokeIds).toContain("torso_ink");
   });
 });

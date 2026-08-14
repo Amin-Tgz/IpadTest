@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { AIProvider } from "../ai/provider.js";
 import { withRetries, extractJson, isProviderError } from "../ai/retry-policy.js";
 import { characterAnalysisPrompt, characterRepairPrompt, CHARACTER_JSON_SCHEMA } from "../ai/prompts.js";
-import { sanitizeCharacterAnalysis, skeletonIsSound } from "../ai/validation.js";
+import { characterHasPartRegions, sanitizeCharacterAnalysis, skeletonIsSound } from "../ai/validation.js";
 import { IMAGE_MAX_BYTES, CANVAS_MAX } from "../ai/skeleton.js";
 import type { ServerConfig } from "../config.js";
 
@@ -74,7 +74,11 @@ export function analyzeCharacterRoute(provider: AIProvider, config: ServerConfig
       let analysis;
       try {
         analysis = sanitizeCharacterAnalysis(raw, body.canvas);
+        if (!characterHasPartRegions(analysis)) throw new Error("recognized character must include body partRegions");
       } catch (error) {
+        console.warn("[pencil-ai] character_analysis_repair_requested", {
+          reason: error instanceof Error ? error.message : "validation failed",
+        });
         const repair = await provider.complete({
           messages: [
             ...messages,
@@ -85,6 +89,11 @@ export function analyzeCharacterRoute(provider: AIProvider, config: ServerConfig
           ],
         });
         analysis = sanitizeCharacterAnalysis(extractJson(repair.text), body.canvas);
+        if (!characterHasPartRegions(analysis)) {
+          console.warn("[pencil-ai] character_segmentation_fallback_required", {
+            reason: "AI repair still returned no partRegions; client will infer them from joints",
+          });
+        }
       }
 
       res.json({

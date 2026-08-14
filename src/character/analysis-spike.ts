@@ -86,7 +86,12 @@ export class AnalysisSpike {
       this.mapping = captured.mapping;
       this.applyAnalysis(result.analysis);
       this.status = "done";
-      this.diagnostics.info("character_analysis_succeeded", { joints: result.analysis.character.joints.length, confidence: result.analysis.character.confidence });
+      this.diagnostics.info("character_analysis_succeeded", {
+        joints: result.analysis.character.joints.length,
+        partRegions: result.analysis.character.partRegions.length,
+        partNames: result.analysis.character.partRegions.map((region) => region.part),
+        confidence: result.analysis.character.confidence,
+      });
       this.onStateChange();
       return result;
     } catch (error) {

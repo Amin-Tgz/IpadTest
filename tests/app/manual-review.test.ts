@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasReviewableChanges } from "../../src/app/manual-review.js";
+import { hasReviewableChanges, nextReviewCheckpoint } from "../../src/app/manual-review.js";
 
 describe("manual drawing review", () => {
   const worldStroke = { active: true, entityId: null };
@@ -22,5 +22,10 @@ describe("manual drawing review", () => {
 
   it("reports a ground change without new ink", () => {
     expect(hasReviewableChanges([], 0, true)).toBe(true);
+  });
+
+  it("does not swallow ink drawn while the spawn animation finishes", () => {
+    expect(nextReviewCheckpoint(5, 6, false)).toBe(5);
+    expect(hasReviewableChanges(Array.from({ length: 6 }, () => worldStroke), 5, false)).toBe(true);
   });
 });

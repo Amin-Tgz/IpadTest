@@ -97,6 +97,10 @@ export function sanitizeCharacterAnalysis(
   return parsed;
 }
 
+export function characterHasPartRegions(analysis: CharacterAnalysis): boolean {
+  return analysis.character.type === "unrecognized" || analysis.character.partRegions.length > 0;
+}
+
 export function skeletonIsSound(analysis: CharacterAnalysis): boolean {
   return verifySkeleton(
     analysis.character.joints.map((j) => ({ id: j.id, parent: j.parent })),

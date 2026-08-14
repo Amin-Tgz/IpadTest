@@ -31,7 +31,7 @@ export function validCharacterJson(): string {
         { id: "neck", x: 54, y: 60, parent: "root", confidence: 0.8 },
       ],
       face: { leftEye: { x: 52, y: 28 }, rightEye: { x: 58, y: 28 }, mouth: { x: 55, y: 36 } },
-      partRegions: [],
+      partRegions: [{ part: "head", polygon: [[40, 20], [70, 20], [70, 50], [40, 50]], confidence: 0.85 }],
     },
   });
 }

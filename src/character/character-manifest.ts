@@ -135,11 +135,20 @@ export function buildManifest(
       y: imageToWorldY(y, mapping),
     }));
     const strokeIds = idMap.sampleStrokesInPolygon(store, polygonWorld);
-    const present = strokes.filter((s) => strokeIds.has(s.id)).map((s) => s.id);
+    const present = strokes
+      .filter((stroke) => strokeIds.has(stroke.id) || stroke.points.some((point) => pointInPolygon(point, polygonWorld)))
+      .map((stroke) => stroke.id);
     if (present.length > 0) {
       parts.push({ part: region.part, strokeIds: present, polygon: polygonWorld });
       present.forEach((id) => covered.add(id));
     }
+  }
+
+  for (const inferred of inferSkeletonParts(joints, strokes)) {
+    const family = partFamily(inferred.part);
+    if (parts.some((part) => partFamily(part.part) === family)) continue;
+    parts.push(inferred);
+    inferred.strokeIds.forEach((id) => covered.add(id));
   }
 
   const uncoveredIncluded = [...included].filter((id) => !covered.has(id));
@@ -156,6 +165,114 @@ export function buildManifest(
     segmentOverrides: [],
     createdAt: Date.now(),
   };
+}
+
+function inferSkeletonParts(
+  joints: JointManifest[],
+  strokes: Array<{ id: string; points: Array<{ x: number; y: number }> }>,
+): PartManifest[] {
+  const byId = new Map(joints.map((joint) => [joint.id, joint]));
+  const ys = joints.map((joint) => joint.y);
+  const height = ys.length > 1 ? Math.max(...ys) - Math.min(...ys) : 180;
+  const radius = Math.max(7, Math.min(22, height * 0.045));
+  const regions: Array<{ part: string; polygon: Array<{ x: number; y: number }> }> = [];
+  const segment = (part: string, from: JointManifest | undefined, to: JointManifest | undefined, width = radius): void => {
+    if (from && to) regions.push({ part, polygon: capsulePolygon(from, to, width) });
+  };
+
+  segment("left_arm", byId.get("left_shoulder"), byId.get("left_elbow"));
+  segment("left_hand", byId.get("left_elbow"), byId.get("left_hand"), radius * 0.9);
+  segment("right_arm", byId.get("right_shoulder"), byId.get("right_elbow"));
+  segment("right_hand", byId.get("right_elbow"), byId.get("right_hand"), radius * 0.9);
+  segment("left_leg", byId.get("left_hip"), byId.get("left_knee"), radius * 1.1);
+  segment("left_foot", byId.get("left_knee"), byId.get("left_foot"), radius * 1.05);
+  segment("right_leg", byId.get("right_hip"), byId.get("right_knee"), radius * 1.1);
+  segment("right_foot", byId.get("right_knee"), byId.get("right_foot"), radius * 1.05);
+
+  const head = byId.get("head");
+  if (head) {
+    const neck = byId.get("neck") ?? byId.get("torso");
+    const headRadius = Math.max(radius * 1.8, neck ? Math.hypot(head.x - neck.x, head.y - neck.y) * 0.72 : 0);
+    regions.push({ part: "head", polygon: circlePolygon(head, Math.min(headRadius, height * 0.18), 12) });
+  }
+
+  const torsoPoints = ["left_shoulder", "right_shoulder", "neck", "torso", "root", "left_hip", "right_hip"]
+    .map((id) => byId.get(id as JointId))
+    .filter((joint): joint is JointManifest => joint !== undefined);
+  if (torsoPoints.length > 0) regions.push({ part: "torso", polygon: paddedBounds(torsoPoints, radius * 1.15) });
+
+  return regions.map((region) => ({
+    part: region.part,
+    polygon: region.polygon,
+    strokeIds: strokes
+      .filter((stroke) => stroke.points.some((point) => pointInPolygon(point, region.polygon)))
+      .map((stroke) => stroke.id),
+  })).filter((region) => region.strokeIds.length > 0);
+}
+
+function capsulePolygon(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  radius: number,
+): Array<{ x: number; y: number }> {
+  const distance = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+  const nx = (-(to.y - from.y) / distance) * radius;
+  const ny = ((to.x - from.x) / distance) * radius;
+  return [
+    { x: from.x + nx, y: from.y + ny },
+    { x: to.x + nx, y: to.y + ny },
+    { x: to.x - nx, y: to.y - ny },
+    { x: from.x - nx, y: from.y - ny },
+  ];
+}
+
+function circlePolygon(
+  center: { x: number; y: number },
+  radius: number,
+  samples: number,
+): Array<{ x: number; y: number }> {
+  return Array.from({ length: samples }, (_, index) => {
+    const angle = (index / samples) * Math.PI * 2;
+    return { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius };
+  });
+}
+
+function paddedBounds(points: Array<{ x: number; y: number }>, padding: number): Array<{ x: number; y: number }> {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs) - padding;
+  const maxX = Math.max(...xs) + padding;
+  const minY = Math.min(...ys) - padding;
+  const maxY = Math.max(...ys) + padding;
+  return [{ x: minX, y: minY }, { x: maxX, y: minY }, { x: maxX, y: maxY }, { x: minX, y: maxY }];
+}
+
+function pointInPolygon(
+  point: { x: number; y: number },
+  polygon: Array<{ x: number; y: number }>,
+): boolean {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const a = polygon[index];
+    const b = polygon[previous];
+    if ((a.y > point.y) !== (b.y > point.y) &&
+      point.x < ((b.x - a.x) * (point.y - a.y)) / ((b.y - a.y) || Number.EPSILON) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+function partFamily(part: string): string {
+  const name = part.toLowerCase();
+  if (name.includes("head") || name.includes("face") || name.includes("hair")) return "head";
+  if (name.includes("torso") || name.includes("body") || name.includes("chest") || name.includes("neck")) return "torso";
+  for (const side of ["left", "right"] as const) {
+    if (!name.includes(side)) continue;
+    if (name.includes("hand") || name.includes("finger") || name.includes("thumb")) return `${side}_hand`;
+    if (name.includes("arm") || name.includes("shoulder") || name.includes("elbow")) return `${side}_arm`;
+    if (name.includes("foot") || name.includes("ankle")) return `${side}_foot`;
+    if (name.includes("leg") || name.includes("hip") || name.includes("knee")) return `${side}_leg`;
+  }
+  return name;
 }
 
 export function migrateManifest(manifest: CharacterManifest): CharacterManifest {

@@ -33,7 +33,7 @@ import { PhaserWorldController } from "../world/phaser-world.js";
 import { REPAIR_PARTS, SegmentRepairEditor, partColor, type RepairPart } from "../character/segment-repair.js";
 import { WorldEntityRegistry, type WorldEntity } from "../world/world-entity.js";
 import type { PhysicsShape } from "../world/phaser-world.js";
-import { hasReviewableChanges } from "./manual-review.js";
+import { hasReviewableChanges, nextReviewCheckpoint } from "./manual-review.js";
 import { validateActionRequest } from "../ai/action-protocol.js";
 
 const appEl = (() => {
@@ -120,7 +120,7 @@ function activateRig(rig: Rig, playSpawn = true): void {
       animController.playById("idle");
       if (!storyStarted) {
         storyStarted = true;
-        startFreePlay();
+        startFreePlay(false);
       } else if (!greeted) {
         greeted = true;
         bubble.show("سلام! پس این تو همونی هستی…", headAnchorScreen());
@@ -129,9 +129,9 @@ function activateRig(rig: Rig, playSpawn = true): void {
   };
 }
 
-function startFreePlay(): void {
+function startFreePlay(resetCheckpoint = true): void {
   showStoryBubble("هر چیزی دوست داری بکش یا بنویس؛ من واکنش نشان می‌دهم.");
-  beginAwaitingDrawing("free_draw");
+  beginAwaitingDrawing("free_draw", resetCheckpoint);
 }
 
 function replaceCharacter(manifest: CharacterManifest, deactivateSample: boolean, playSpawn = true): void {
@@ -288,7 +288,7 @@ async function restoreSession(): Promise<void> {
         }
         checkpoint = savedQuest?.checkpoint ?? store.count();
         storyStarted = true;
-        beginAwaitingDrawing("free_draw");
+        beginAwaitingDrawing("free_draw", false);
       }
     }
   } catch (error) {
@@ -320,9 +320,10 @@ function showStoryBubble(text: string): void {
 
 function beginAwaitingDrawing(goalId: string, resetCheckpoint = true): void {
   awaitingGoalId = goalId;
-  if (resetCheckpoint) checkpoint = store.count();
+  checkpoint = nextReviewCheckpoint(checkpoint, store.count(), resetCheckpoint);
   analysisInFlight = false;
   appState.setMode("awaiting");
+  diagnostics.info("drawing_review_ready", { goalId, checkpoint, strokeCount: store.count(), resetCheckpoint });
   refreshReviewControls();
 }
 
@@ -964,6 +965,13 @@ function enterEditorMode(box: { x: number; y: number; width: number; height: num
   if (!mapping || !spike.analysis) return;
   const filter = includeSample ? (s: { entityId: string | null }) => s.entityId === "sample_character" : undefined;
   const manifest = buildManifest(spike.analysis, mapping, store, idMap, filter);
+  diagnostics.info("character_segmentation_built", {
+    aiRegionCount: spike.analysis.character.partRegions.length,
+    aiPartNames: spike.analysis.character.partRegions.map((region) => region.part),
+    manifestPartCount: manifest.parts.length,
+    manifestParts: manifest.parts.map((part) => ({ part: part.part, strokes: part.strokeIds.length, hasPolygon: Boolean(part.polygon) })),
+    includedStrokes: manifest.includedStrokeIds.length,
+  });
   editor.begin(includeSample ? box : characterGuideBox(), manifest, filter);
   editor.nextStage();
   hideRevive();
@@ -990,6 +998,9 @@ function finalizeCharacter(): void {
   hideStageButton();
   stageTitleEl.style.opacity = "0";
   replaceCharacter(manifest, true);
+  // Free drawing is enabled immediately. If the child starts a balloon while
+  // the spawn animation is still playing, that ink remains after this checkpoint.
+  beginAwaitingDrawing("free_draw");
   if (storage) void storage.saveManifest(manifest);
   console.log("[pencil-ai] character manifest:", JSON.stringify(manifest, null, 2));
   bubble.show("آها! پس تو این شکلی…", headAnchorScreen());
@@ -1030,6 +1041,7 @@ function refreshReviewControls(): void {
   } else if (mode === "awaiting" && !analysisInFlight && hasPendingReview()) {
     reviewEl.style.opacity = "1";
     reviewEl.style.pointerEvents = "auto";
+    diagnostics.info("drawing_review_button_shown", { checkpoint, strokeCount: store.count(), groundChangePending });
   }
 }
 
@@ -1078,8 +1090,16 @@ const pointer = new PointerInput(canvas, store, camera, {
       }
     }
   },
-  onStrokeEnd: () => {
+  onStrokeEnd: (stroke) => {
     pencilDown = false;
+    diagnostics.info("drawing_stroke_completed", {
+      id: stroke.id,
+      mode: appState.get().mode,
+      checkpoint,
+      strokeCount: store.count(),
+      reviewPending: hasPendingReview(),
+    });
+    if (rigRuntime && appState.get().mode === "live") beginAwaitingDrawing("free_draw", false);
     refreshReviewControls();
     scheduleSave();
   },

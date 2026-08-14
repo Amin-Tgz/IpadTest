@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeCharacterAnalysis } from "../../server/ai/validation.js";
+import { characterHasPartRegions, sanitizeCharacterAnalysis } from "../../server/ai/validation.js";
 
 const base = {
   version: "1.0",
@@ -14,7 +14,7 @@ const base = {
       { id: "neck", x: 54, y: 60, parent: "root", confidence: 0.8 },
     ],
     face: { leftEye: { x: 52, y: 28 }, rightEye: { x: 58, y: 28 }, mouth: { x: 55, y: 36 } },
-    partRegions: [],
+    partRegions: [{ part: "head", polygon: [[40, 20], [70, 20], [70, 50], [40, 50]], confidence: 0.85 }],
   },
 };
 
@@ -54,5 +54,11 @@ describe("sanitizeCharacterAnalysis", () => {
     (input.character as { face: unknown }).face = {};
     const out = sanitizeCharacterAnalysis(input, { width: 512, height: 512 });
     expect(out.character.face).toEqual({});
+  });
+
+  it("marks a recognized character without body-part regions for repair", () => {
+    const input = structuredClone(base);
+    input.character.partRegions = [];
+    expect(characterHasPartRegions(sanitizeCharacterAnalysis(input, { width: 512, height: 512 }))).toBe(false);
   });
 });
