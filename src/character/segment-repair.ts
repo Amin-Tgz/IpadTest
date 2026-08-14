@@ -25,6 +25,7 @@ export class SegmentRepairEditor {
   activePart: RepairPart = "torso";
   private lasso: Array<{ x: number; y: number }> = [];
   private drawing = false;
+  private previewUntil = 0;
 
   constructor(readonly manifest: CharacterManifest) {}
 
@@ -32,7 +33,35 @@ export class SegmentRepairEditor {
     this.activePart = part;
   }
 
+  previewPart(part: RepairPart, durationMs = 2200): void {
+    this.setPart(part);
+    this.previewUntil = performance.now() + durationMs;
+  }
+
+  get previewActive(): boolean {
+    return performance.now() < this.previewUntil;
+  }
+
+  previewMaskPolygons(part: RepairPart = this.activePart): Array<Array<{ x: number; y: number }>> {
+    const polygons = [
+      ...this.manifest.parts.filter((region) => repairPartsMatch(part, region.part)).map((region) => region.polygon),
+      ...(this.manifest.segmentOverrides ?? []).filter((region) => repairPartsMatch(part, region.part)).map((region) => region.polygon),
+    ].filter((polygon): polygon is Array<{ x: number; y: number }> => Boolean(polygon && polygon.length >= 3));
+    if (polygons.length > 0) return polygons;
+    const facePoint = part === "left_eyebrow"
+      ? this.manifest.face.leftEyebrow
+      : part === "right_eyebrow" ? this.manifest.face.rightEyebrow : undefined;
+    if (!facePoint) return [];
+    return [[
+      { x: facePoint.x - 14, y: facePoint.y - 7 },
+      { x: facePoint.x + 14, y: facePoint.y - 7 },
+      { x: facePoint.x + 14, y: facePoint.y + 7 },
+      { x: facePoint.x - 14, y: facePoint.y + 7 },
+    ]];
+  }
+
   pointerDown(point: { x: number; y: number }): void {
+    this.previewUntil = 0;
     this.lasso = [point];
     this.drawing = true;
   }
@@ -68,15 +97,30 @@ export class SegmentRepairEditor {
     for (const part of this.manifest.parts) {
       if (!part.polygon || part.polygon.length < 3) continue;
       const color = partColor(part.part);
-      ctx.fillStyle = `${color}24`;
-      ctx.strokeStyle = `${color}B8`;
-      ctx.lineWidth = 2;
+      const selected = this.previewActive && repairPartsMatch(this.activePart, part.part);
+      ctx.fillStyle = selected ? `${partColor(this.activePart)}66` : `${color}${this.previewActive ? "10" : "24"}`;
+      ctx.strokeStyle = selected ? partColor(this.activePart) : `${color}${this.previewActive ? "38" : "B8"}`;
+      ctx.lineWidth = selected ? 5 : 2;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
       part.polygon.forEach((point, index) => index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y));
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
+    }
+    if (this.previewActive) {
+      const color = partColor(this.activePart);
+      for (const polygon of this.previewMaskPolygons()) {
+        ctx.fillStyle = `${color}66`;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 5;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        polygon.forEach((point, index) => index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y));
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
     }
     for (const override of this.manifest.segmentOverrides ?? []) {
       if (override.polygon.length < 3) continue;
@@ -101,6 +145,12 @@ export class SegmentRepairEditor {
     }
     ctx.restore();
   }
+}
+
+export function repairPartsMatch(selected: string, manifestPart: string): boolean {
+  if (selected === manifestPart) return true;
+  if (selected.endsWith("_fingers")) return manifestPart === selected.replace("_fingers", "_hand");
+  return false;
 }
 
 export function partColor(part: string): string {

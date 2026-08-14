@@ -957,7 +957,7 @@ for (const part of REPAIR_PARTS) {
   button.textContent = repairLabels[part];
   button.style.cssText = `min-height:44px;padding:8px 12px;border-radius:12px;border:3px solid ${partColor(part)};background:#103B46;color:#F7F5EE;font:14px system-ui;touch-action:manipulation`;
   button.addEventListener("click", () => {
-    segmentRepair?.setPart(part);
+    segmentRepair?.previewPart(part);
     repairPartButtons.forEach((item, key) => {
       item.style.background = key === part ? "#D8F6FF" : "#103B46";
       item.style.color = key === part ? "#103B46" : "#F7F5EE";

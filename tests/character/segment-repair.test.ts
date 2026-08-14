@@ -35,4 +35,32 @@ describe("SegmentRepairEditor", () => {
     expect(editor.manifest.segmentOverrides).toEqual([]);
     expect(editor.undo()).toBe(false);
   });
+
+  it("previews the selected mask and maps fingers to the hand region", () => {
+    const previewManifest: CharacterManifest = {
+      ...structuredClone(manifest),
+      parts: [{
+        part: "left_hand",
+        strokeIds: ["hand"],
+        polygon: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 }],
+      }],
+    };
+    const editor = new SegmentRepairEditor(previewManifest);
+    editor.previewPart("left_fingers", 2000);
+    expect(editor.activePart).toBe("left_fingers");
+    expect(editor.previewActive).toBe(true);
+    expect(editor.previewMaskPolygons()).toHaveLength(1);
+    editor.pointerDown({ x: 2, y: 2 });
+    expect(editor.previewActive).toBe(false);
+  });
+
+  it("builds an eyebrow preview around its face anchor", () => {
+    const eyebrowManifest: CharacterManifest = {
+      ...structuredClone(manifest),
+      face: { leftEyebrow: { x: 50, y: 40 } },
+    };
+    const editor = new SegmentRepairEditor(eyebrowManifest);
+    editor.previewPart("left_eyebrow");
+    expect(editor.previewMaskPolygons()[0]).toHaveLength(4);
+  });
 });

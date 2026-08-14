@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { choosePersianVoice } from "../../src/story/persian-speech.js";
+import { choosePersianVoice, normalizePersianSpeechText } from "../../src/story/persian-speech.js";
 
 describe("Persian speech voice selection", () => {
   it("prefers a local fa-IR voice and ignores non-Persian voices", () => {
@@ -13,5 +13,10 @@ describe("Persian speech voice selection", () => {
 
   it("returns null when Persian speech is unavailable", () => {
     expect(choosePersianVoice([{ name: "English", lang: "en-US", localService: true }])).toBeNull();
+  });
+
+  it("removes spoken punctuation, emoji, and formatting from AI text", () => {
+    expect(normalizePersianSpeechText("!!! **سلام!** 😊 حالت چطوره؟")).toBe("سلام حالت چطوره");
+    expect(normalizePersianSpeechText("!؟…")).toBe("");
   });
 });

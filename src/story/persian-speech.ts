@@ -6,6 +6,17 @@ export interface VoiceLike {
 
 const CHILD_FRIENDLY_NAMES = ["darya", "lili", "female", "woman", "زن"];
 
+export function normalizePersianSpeechText(text: string): string {
+  return text
+    .normalize("NFKC")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/[*_#~`<>|=+\\/()[\]{}]/g, " ")
+    .replace(/[!?؟¡‼⁉.,،؛:;…«»"'“”‘’ـ-]+/g, " ")
+    .replace(/\p{Extended_Pictographic}/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function choosePersianVoice<T extends VoiceLike>(voices: T[]): T | null {
   const persian = voices.filter((voice) => /^fa(?:-|$)/i.test(voice.lang));
   return [...persian].sort((left, right) => {
@@ -25,9 +36,10 @@ export class PersianSpeech {
   }
 
   speak(text: string, onEnd: () => void = () => void 0): boolean {
-    if (!this.supported || text.trim().length === 0) return false;
+    const normalizedText = normalizePersianSpeechText(text);
+    if (!this.supported || normalizedText.length === 0) return false;
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    const utterance = new SpeechSynthesisUtterance(normalizedText);
     utterance.lang = "fa-IR";
     utterance.rate = 0.9;
     utterance.pitch = 1.18;
