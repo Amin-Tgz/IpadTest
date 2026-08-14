@@ -1,5 +1,6 @@
 import { StrokeStore, type Stroke, type StrokePoint } from "../drawing/stroke-store.js";
 import { PALETTE } from "../app/constants.js";
+import type { CharacterManifest, JointManifest } from "../character/character-manifest.js";
 
 function circlePoints(cx: number, cy: number, r: number, count: number): StrokePoint[] {
   const pts: StrokePoint[] = [];
@@ -70,4 +71,57 @@ export function buildSampleCharacter(store: StrokeStore, originX: number, baseli
 
   strokes.forEach((s) => store.add(s));
   return entityId;
+}
+
+export function sampleCharacterJoints(originX: number, baselineY: number): JointManifest[] {
+  const cx = originX;
+  const headCy = baselineY - 196;
+  const hipY = baselineY - 96;
+  const kneeY = baselineY - 46;
+  const footY = baselineY - 4;
+  const joint = (id: JointManifest["id"], x: number, y: number, parent: JointManifest["parent"], confidence = 0.99): JointManifest => ({
+    id,
+    x,
+    y,
+    parent,
+    confidence,
+  });
+
+  return [
+    joint("root", cx, hipY + 4, null),
+    joint("torso", cx, hipY - 24, "root"),
+    joint("neck", cx, hipY - 48, "torso"),
+    joint("head", cx, headCy, "neck"),
+    joint("left_shoulder", cx - 18, hipY - 36, "torso"),
+    joint("left_elbow", cx - 30, hipY - 16, "left_shoulder"),
+    joint("left_hand", cx - 40, hipY + 2, "left_elbow"),
+    joint("right_shoulder", cx + 18, hipY - 36, "torso"),
+    joint("right_elbow", cx + 30, hipY - 16, "right_shoulder"),
+    joint("right_hand", cx + 40, hipY + 2, "right_elbow"),
+    joint("left_hip", cx - 4, hipY + 4, "root"),
+    joint("left_knee", cx - 13, kneeY, "left_hip"),
+    joint("left_foot", cx - 24, footY, "left_knee"),
+    joint("right_hip", cx + 4, hipY + 4, "root"),
+    joint("right_knee", cx + 13, kneeY, "right_hip"),
+    joint("right_foot", cx + 24, footY, "right_knee"),
+  ];
+}
+
+export function buildSampleManifest(store: StrokeStore, originX: number, baselineY: number): CharacterManifest {
+  const strokeIds = store
+    .all()
+    .filter((s) => s.entityId === "sample_character")
+    .map((s) => s.id);
+  return {
+    version: "1.0",
+    joints: sampleCharacterJoints(originX, baselineY),
+    face: {
+      leftEye: { x: originX - 11, y: baselineY - 201 },
+      rightEye: { x: originX + 11, y: baselineY - 201 },
+      mouth: { x: originX, y: baselineY - 177 },
+    },
+    parts: [],
+    includedStrokeIds: strokeIds,
+    createdAt: Date.now(),
+  };
 }

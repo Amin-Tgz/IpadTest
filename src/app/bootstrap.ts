@@ -6,10 +6,14 @@ import { IdMap } from "../drawing/id-map.js";
 import { Camera } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { SpeechBubble } from "../story/speech-bubble.js";
-import { buildSampleCharacter } from "./sample-character.js";
+import { buildSampleCharacter, buildSampleManifest } from "./sample-character.js";
 import { AnalysisSpike } from "../character/analysis-spike.js";
 import { JointEditor } from "../character/joint-editor.js";
-import { buildManifest } from "../character/character-manifest.js";
+import { buildManifest, type CharacterManifest } from "../character/character-manifest.js";
+import { buildRig, type Rig } from "../character/rig-builder.js";
+import { RigRuntime } from "../character/rig-runtime.js";
+import { AnimationController } from "../animation/animation-controller.js";
+import { MOTION_CLIPS } from "../animation/motion-clips.js";
 import { createSessionStorage } from "../storage/indexed-db.js";
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO, INACTIVITY_MS } from "./constants.js";
 
@@ -43,6 +47,38 @@ const editor = new JointEditor(store, getViewport);
 
 const spike = new AnalysisSpike(store, camera, getViewport, () => groundPath, bubble);
 
+const animController = new AnimationController();
+let rigRuntime: RigRuntime | null = null;
+let riggedStrokeIds = new Set<string>();
+let greeted = false;
+
+function activateRig(rig: Rig): void {
+  rigRuntime = new RigRuntime(rig);
+  riggedStrokeIds = new Set(rig.strokes.map((s) => s.id));
+  animController.play(MOTION_CLIPS.spawn);
+  animController.onClipEnd = (clipId) => {
+    if (clipId === "spawn") {
+      animController.playById("idle");
+      if (!greeted) {
+        greeted = true;
+        bubble.show("سلام! پس این تو همونی هستی…", headAnchorScreen());
+      }
+    }
+  };
+}
+
+function replaceCharacter(manifest: CharacterManifest, deactivateSample: boolean): void {
+  activateRig(buildRig(manifest, store));
+  if (deactivateSample) {
+    for (const stroke of store.all()) {
+      if (stroke.entityId === "sample_character") {
+        store.deactivate(stroke.id);
+        riggedStrokeIds.delete(stroke.id);
+      }
+    }
+  }
+}
+
 function resize(): void {
   const dpr = window.devicePixelRatio || 1;
   const w = window.innerWidth;
@@ -66,6 +102,7 @@ function rebuildWorld(): void {
   if (!sampleBuilt) {
     sampleBuilt = true;
     buildSampleCharacter(store, w * 0.34, baselineY);
+    replaceCharacter(buildSampleManifest(store, w * 0.34, baselineY), false);
   }
 }
 
@@ -238,6 +275,7 @@ function finalizeCharacter(): void {
   appState.setMode("live");
   hideStageButton();
   stageTitleEl.style.opacity = "0";
+  replaceCharacter(manifest, true);
   if (storage) void storage.saveManifest(manifest);
   console.log("[pencil-ai] character manifest:", JSON.stringify(manifest, null, 2));
   bubble.show("آها! پس تو این شکلی…", headAnchorScreen());
@@ -299,6 +337,9 @@ const pointer = new PointerInput(canvas, store, camera, {
   },
   onPencilMove: (e) => {
     lastPencil = e;
+    if (rigRuntime && appState.get().mode === "live") {
+      rigRuntime.look = { targetX: e.x, targetY: e.y };
+    }
   },
   onPencilDown: (e) => {
     lastPencil = e;
@@ -336,7 +377,34 @@ function renderFrame(now: number): void {
   ctx.stroke();
 
   for (const stroke of store.all()) {
-    if (stroke.active) renderer.drawStroke(ctx, stroke, camera);
+    if (stroke.active && !riggedStrokeIds.has(stroke.id)) {
+      renderer.drawStroke(ctx, stroke, camera);
+    }
+  }
+
+  if (rigRuntime) {
+    const pose = animController.update(now);
+    rigRuntime.applyPose({
+      jointRotations: pose.jointRotations,
+      rootDeltaX: 0,
+      rootDeltaY: pose.rootDeltaY,
+      rootRotation: pose.rootRotation,
+    });
+    const strokes = rigRuntime.transformedStrokePoints();
+    ctx.save();
+    ctx.translate(-camera.state.x, -camera.state.y);
+    rigRuntime.strokes.forEach((rigStroke, i) => {
+      const points = strokes[i];
+      if (!points || points.length < 2) return;
+      ctx.strokeStyle = rigStroke.color;
+      ctx.lineWidth = rigStroke.baseWidth;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      points.forEach((p, j) => (j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+    });
+    ctx.restore();
   }
 
   if (appState.get().mode === "setup") {
