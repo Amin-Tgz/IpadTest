@@ -14,7 +14,7 @@ const bodySchema = z.object({
     width: z.number().min(1).max(CANVAS_MAX),
     height: z.number().min(1).max(CANVAS_MAX),
   }),
-  goal: z.string().min(1).max(60),
+  goal: z.string().min(1).max(200),
   joints: z.array(z.object({ id: z.string().max(40), x: z.number(), y: z.number() })).max(32),
   worldSummary: z.string().max(400),
   acceptedCategories: z.array(z.string().max(40)).max(12),
