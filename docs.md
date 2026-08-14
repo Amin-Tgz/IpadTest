@@ -2,11 +2,13 @@
 
 Living document. Each plan phase ends with: test result, commit hash, notes, open questions.
 
-## Phase 0 — Visual Prototype (planned)
+## Phase 0 — Visual Prototype (done)
 
-Palette, baseline, pointer input, stroke store/renderer, speech bubble mock, idle mock.
+- Petroleum theme, white 4px strokes (2–8px via pressure), baseline at 72% viewport height, RTL Persian speech bubble with scale-in, sample character (hardcoded strokes, `src/app/sample-character.ts`), pencil glow, inactivity bubble demo.
+- Modules: `stroke-store`, `pointer-input` (Pointer Events + pressure + world space), `stroke-renderer` (perfect-freehand + path cache), `stroke-resampler`, `camera`, `ground-path`, `speech-bubble`, `app-state`.
+- Tests: 14 passing (store, resampler, camera, ground-path). Vite build OK. Server smoke OK.
 
-## Phase 1 — Character Analysis (planned)
+## Phase 1 — Character Analysis (in progress)
 
 Server + provider adapter + `/api/character/analyze`.
 

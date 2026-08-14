@@ -6,6 +6,7 @@ import { Camera } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { SpeechBubble } from "../story/speech-bubble.js";
 import { buildSampleCharacter } from "./sample-character.js";
+import { AnalysisSpike } from "../character/analysis-spike.js";
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO, INACTIVITY_MS } from "./constants.js";
 
 const appEl = document.getElementById("app");
@@ -26,6 +27,16 @@ const store = new StrokeStore();
 const camera = new Camera();
 const renderer = new StrokeRenderer();
 const bubble = new SpeechBubble(appEl);
+const spike = new AnalysisSpike(
+  store,
+  camera,
+  () => {
+    const { viewportWidth, viewportHeight } = appState.get();
+    return { width: viewportWidth, height: viewportHeight };
+  },
+  () => groundPath,
+  bubble,
+);
 
 function resize(): void {
   const dpr = window.devicePixelRatio || 1;
@@ -94,6 +105,12 @@ function scheduleIdleAction(): void {
   if (idleTimer !== null) window.clearTimeout(idleTimer);
   idleTimer = window.setTimeout(() => {
     idleTimer = null;
+    if (spike.status === "analyzing") return;
+    if (spike.userHasDrawn() && spike.status !== "done") {
+      reviveEl.style.opacity = "1";
+      reviveEl.style.pointerEvents = "auto";
+      return;
+    }
     const { viewportWidth: w, viewportHeight: h } = appState.get();
     const anchor = camera.worldToScreen({
       x: w * 0.34,
@@ -108,11 +125,66 @@ function scheduleIdleAction(): void {
   }, INACTIVITY_MS);
 }
 
+function hideRevive(): void {
+  reviveEl.style.opacity = "0";
+  reviveEl.style.pointerEvents = "none";
+}
+
+const reviveEl = document.createElement("button");
+reviveEl.style.cssText = [
+  "position:absolute",
+  "z-index:35",
+  "bottom:max(28px, env(safe-area-inset-bottom))",
+  "left:50%",
+  "transform:translateX(-50%)",
+  "color:#F7F5EE",
+  "background:rgba(16,59,70,0.9)",
+  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
+  "font-size:16px",
+  "padding:10px 26px",
+  "border-radius:999px",
+  "border:1px solid rgba(247,245,238,0.4)",
+  "direction:rtl",
+  "opacity:0",
+  "transition:opacity 300ms",
+  "pointer-events:none",
+].join(";");
+reviveEl.textContent = "زنده‌اش کن";
+reviveEl.addEventListener("click", () => {
+  hideRevive();
+  void spike.requestAnalyze(false);
+});
+appEl.appendChild(reviveEl);
+
+const sampleDemoEl = document.createElement("button");
+sampleDemoEl.style.cssText = [
+  "position:absolute",
+  "z-index:35",
+  "bottom:max(28px, env(safe-area-inset-bottom))",
+  "left:50%",
+  "transform:translateX(-50%)",
+  "color:rgba(247,245,238,0.75)",
+  "background:transparent",
+  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
+  "font-size:13px",
+  "padding:6px 16px",
+  "border-radius:999px",
+  "border:1px solid rgba(247,245,238,0.2)",
+  "direction:rtl",
+  "transition:opacity 300ms",
+].join(";");
+sampleDemoEl.textContent = "تحلیل شخصیت نمونه";
+sampleDemoEl.addEventListener("click", () => void spike.requestAnalyze(true));
+appEl.appendChild(sampleDemoEl);
+
 const pointer = new PointerInput(canvas, store, camera, {
   onStrokeStart: () => {
     pencilDown = true;
     hintEl.style.opacity = "0";
     hintVisible = false;
+    hideRevive();
+    sampleDemoEl.style.opacity = "0";
+    sampleDemoEl.style.pointerEvents = "none";
     if (bubble.isVisible()) bubble.hide();
     if (idleTimer !== null) window.clearTimeout(idleTimer);
   },
@@ -145,6 +217,8 @@ function renderFrame(now: number): void {
   for (const stroke of store.all()) {
     if (stroke.active) renderer.drawStroke(ctx, stroke, camera);
   }
+
+  spike.drawOverlay(ctx, camera);
 
   if (pencilDown && lastPencil) {
     const sp = camera.worldToScreen(lastPencil);
@@ -181,6 +255,8 @@ resize();
 appState.setMode("intro");
 requestAnimationFrame(renderFrame);
 
-window.setTimeout(scheduleIdleAction, 4000);
+window.setTimeout(() => {
+  if (!spike.userHasDrawn()) scheduleIdleAction();
+}, 4000);
 
-console.log("[pencil-ai] phase 0 bootstrap ready");
+console.log("[pencil-ai] phase 1 bootstrap ready");
