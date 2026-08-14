@@ -95,6 +95,10 @@ export function analyzeCharacterRoute(provider: AIProvider, config: ServerConfig
       });
     } catch (error) {
       const status = error instanceof z.ZodError ? 400 : 422;
+      console.error("[pencil-ai] character_analysis_failed", {
+        status,
+        message: error instanceof Error ? error.message : "unknown error",
+      });
       res.status(status).json({
         error: "character_analysis_failed",
         message: error instanceof Error ? error.message : "unknown error",

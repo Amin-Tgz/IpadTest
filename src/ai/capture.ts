@@ -15,10 +15,16 @@ export interface CapturedView {
   mime: "image/png" | "image/webp";
 }
 
+export interface DeltaCapture {
+  dataUrl: string;
+  cropInImageA: { x: number; y: number; width: number; height: number };
+}
+
 export function captureDelta(
   strokes: Stroke[],
   targetMaxDim: number,
-): string | null {
+  fullMapping: CaptureMapping,
+): DeltaCapture | null {
   if (strokes.length === 0) return null;
   const xs: number[] = [];
   const ys: number[] = [];
@@ -60,7 +66,15 @@ export function captureDelta(
     ctx.stroke();
   }
   ctx.restore();
-  return canvas.toDataURL("image/png");
+  return {
+    dataUrl: canvas.toDataURL("image/png"),
+    cropInImageA: {
+      x: (minX - padding - fullMapping.cameraX) * fullMapping.scale,
+      y: (minY - padding - (fullMapping.cameraY ?? 0)) * fullMapping.scale,
+      width: width * fullMapping.scale,
+      height: height * fullMapping.scale,
+    },
+  };
 }
 
 export function captureViewport(
@@ -88,13 +102,14 @@ export function captureViewport(
   ctx.translate(-camera.state.x * scale, 0);
   ctx.scale(scale, scale);
 
-  const poly = groundPath.screenPolyline(camera.state.x);
   ctx.strokeStyle = PALETTE.primaryInk;
   ctx.lineWidth = BASE_LINE_WIDTH + 1;
   ctx.lineCap = "round";
-  ctx.beginPath();
-  poly.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
-  ctx.stroke();
+  for (const poly of groundPath.screenPolylines(0)) {
+    ctx.beginPath();
+    poly.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+    ctx.stroke();
+  }
 
   const includeSample = options.includeSampleCharacter;
   for (const stroke of store.all()) {
@@ -111,10 +126,47 @@ export function captureViewport(
 
   ctx.restore();
 
-  const mapping: CaptureMapping = { scale, cameraX: camera.state.x, width, height };
+  const mapping: CaptureMapping = { scale, cameraX: camera.state.x, cameraY: 0, width, height };
   return {
     dataUrl: canvas.toDataURL("image/png"),
     mapping,
+    mime: "image/png",
+  };
+}
+
+export function captureRegion(
+  store: StrokeStore,
+  region: { x: number; y: number; width: number; height: number },
+  options: CaptureOptions,
+): CapturedView {
+  const scale = Math.min(1, options.targetMaxDim / Math.max(region.width, region.height));
+  const width = Math.max(1, Math.round(region.width * scale));
+  const height = Math.max(1, Math.round(region.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("offscreen canvas unavailable");
+  ctx.fillStyle = PALETTE.background;
+  ctx.fillRect(0, 0, width, height);
+  ctx.save();
+  ctx.scale(scale, scale);
+  ctx.translate(-region.x, -region.y);
+  for (const stroke of store.all()) {
+    if (!stroke.active) continue;
+    if (stroke.entityId === "sample_character" && !options.includeSampleCharacter) continue;
+    ctx.strokeStyle = stroke.color;
+    ctx.lineWidth = stroke.baseWidth;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    stroke.points.forEach((point, index) => index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y));
+    ctx.stroke();
+  }
+  ctx.restore();
+  return {
+    dataUrl: canvas.toDataURL("image/png"),
+    mapping: { scale, cameraX: region.x, cameraY: region.y, width, height },
     mime: "image/png",
   };
 }
@@ -129,6 +181,6 @@ export function imagePointToWorld(
 ): { x: number; y: number } {
   return {
     x: p.x / mapping.scale + mapping.cameraX,
-    y: p.y / mapping.scale,
+    y: p.y / mapping.scale + (mapping.cameraY ?? 0),
   };
 }

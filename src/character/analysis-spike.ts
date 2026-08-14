@@ -2,11 +2,12 @@ import type { StrokeStore } from "../drawing/stroke-store.js";
 import type { Camera } from "../world/camera.js";
 import type { GroundPath } from "../world/ground-path.js";
 import type { SpeechBubble } from "../story/speech-bubble.js";
-import { captureViewport } from "../ai/capture.js";
+import { captureRegion, captureViewport } from "../ai/capture.js";
 import { analyzeCharacter } from "../ai/ai-client.js";
 import { imageToWorldX, imageToWorldY, type CaptureMapping } from "../ai/normalization.js";
 import type { CharacterAnalysis, CharacterAnalyzeResult } from "../ai/schemas.js";
 import { PALETTE } from "../app/constants.js";
+import type { Diagnostics } from "../app/diagnostics.js";
 
 export type SpikeStatus = "idle" | "analyzing" | "done" | "failed";
 
@@ -40,11 +41,13 @@ export class AnalysisSpike {
     private readonly getViewport: () => { width: number; height: number },
     private readonly getGroundPath: () => GroundPath,
     private readonly bubble: SpeechBubble,
+    private readonly diagnostics: Diagnostics,
+    private readonly getAnalysisRegion: (() => { x: number; y: number; width: number; height: number }) | null = null,
     private readonly onStateChange: () => void = () => void 0,
   ) {}
 
   userHasDrawn(): boolean {
-    return this.store.all().some((s) => s.entityId === null);
+    return this.store.all().some((s) => s.active && s.entityId === null);
   }
 
   getMapping(): CaptureMapping | null {
@@ -55,19 +58,25 @@ export class AnalysisSpike {
     if (this.inFlight) return null;
     this.inFlight = true;
     this.status = "analyzing";
+    this.diagnostics.info("character_analysis_started", { includeSample, activeStrokes: this.store.active().length });
     this.analysis = null;
     this.bubble.show("بذار دقیق ببینمت…", this.headAnchor());
     this.onStateChange();
 
     try {
       const viewport = this.getViewport();
-      const captured = captureViewport(
-        this.store,
-        this.camera,
-        viewport,
-        this.getGroundPath(),
-        { targetMaxDim: 1024, includeSampleCharacter: includeSample },
-      );
+      const captured = !includeSample && this.getAnalysisRegion
+        ? captureRegion(this.store, paddedRegion(this.getAnalysisRegion(), viewport), {
+            targetMaxDim: 768,
+            includeSampleCharacter: false,
+          })
+        : captureViewport(
+            this.store,
+            this.camera,
+            viewport,
+            this.getGroundPath(),
+            { targetMaxDim: 1024, includeSampleCharacter: includeSample },
+          );
       const result = await analyzeCharacter(captured.dataUrl, {
         width: captured.mapping.width,
         height: captured.mapping.height,
@@ -75,10 +84,12 @@ export class AnalysisSpike {
       this.mapping = captured.mapping;
       this.applyAnalysis(result.analysis);
       this.status = "done";
+      this.diagnostics.info("character_analysis_succeeded", { joints: result.analysis.character.joints.length, confidence: result.analysis.character.confidence });
       this.onStateChange();
       return result;
     } catch (error) {
       this.status = "failed";
+      this.diagnostics.error("character_analysis_failed", error);
       this.bubble.show("هوم… هنوز خوب نمی‌بینمت. یه بار دیگه امتحان کنیم؟", this.headAnchor());
       this.onStateChange();
       return null;
@@ -175,4 +186,16 @@ export class AnalysisSpike {
 
     ctx.restore();
   }
+}
+
+function paddedRegion(
+  region: { x: number; y: number; width: number; height: number },
+  viewport: { width: number; height: number },
+): { x: number; y: number; width: number; height: number } {
+  const padding = Math.max(18, Math.min(region.width, region.height) * 0.08);
+  const x = Math.max(0, region.x - padding);
+  const y = Math.max(0, region.y - padding);
+  const right = Math.min(viewport.width, region.x + region.width + padding);
+  const bottom = Math.min(viewport.height, region.y + region.height + padding);
+  return { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) };
 }

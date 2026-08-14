@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { hitTestBox, hitTestJoint } from "../../src/character/joint-editor.js";
+import { JointEditor, hitTestBox, hitTestJoint } from "../../src/character/joint-editor.js";
 import type { JointManifest } from "../../src/character/character-manifest.js";
+import { StrokeStore } from "../../src/drawing/stroke-store.js";
 
 const box = { x: 100, y: 100, width: 200, height: 300 };
 
@@ -40,5 +41,18 @@ describe("hitTestJoint", () => {
 
   it("returns toggle when nothing is near", () => {
     expect(hitTestJoint({ x: 500, y: 500 }, joints).mode).toBe("toggle");
+  });
+});
+
+describe("JointEditor streamlined workflow", () => {
+  it("automatically includes boxed strokes and moves directly to joint correction", () => {
+    const store = new StrokeStore();
+    store.add({ id: "body", points: [{ x: 180, y: 180, pressure: 0.5, time: 0 }, { x: 190, y: 190, pressure: 0.5, time: 1 }], color: "#fff", baseWidth: 4, tool: "pen", createdAt: 0, worldSpace: true, entityId: null, active: true, groupId: null });
+    const editor = new JointEditor(store, () => ({ width: 500, height: 500 }));
+    editor.begin(box, { version: "1.0", joints: [{ id: "root", x: 180, y: 180, parent: null, confidence: 1 }], face: {}, parts: [], includedStrokeIds: ["body"], createdAt: 0 });
+    editor.nextStage();
+    expect(editor.stage).toBe("joints");
+    expect(editor.manifest?.includedStrokeIds).toEqual(["body"]);
+    expect(editor.box).toEqual(box);
   });
 });

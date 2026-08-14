@@ -2,6 +2,7 @@ import type { Attachment } from "../character/attachments.js";
 import { toLocalPoints } from "../character/attachments.js";
 import type { JointId } from "../app/constants.js";
 import { PALETTE } from "../app/constants.js";
+import { IDENTITY_ENTITY_TRANSFORM } from "../character/entity-transform.js";
 
 export function buildShoeAttachment(
   anchor: { x: number; y: number },
@@ -32,9 +33,10 @@ export function buildShoeAttachment(
     id: `shoe_${side}`,
     kind: "wearable",
     boneId,
-    localPoints: toLocalPoints(scaled, { x: 0, y: 0 }),
-    color: PALETTE.primaryInk,
-    baseWidth: 4,
+    sourceStrokeIds: [`demo_shoe_${side}`],
+    strokes: [{ sourceStrokeId: `demo_shoe_${side}`, localPoints: toLocalPoints(scaled, { x: 0, y: 0 }), color: PALETTE.primaryInk, baseWidth: 4 }],
+    localTransform: { ...IDENTITY_ENTITY_TRANSFORM },
+    visible: true,
     drawOrder: 7,
   };
 }
@@ -53,9 +55,10 @@ export function buildRodAttachment(anchor: { x: number; y: number }): Attachment
     id: "rod",
     kind: "held_tool",
     boneId: "right_hand",
-    localPoints: toLocalPoints(points, { x: 0, y: 0 }),
-    color: PALETTE.primaryInk,
-    baseWidth: 3.5,
+    sourceStrokeIds: ["demo_rod"],
+    strokes: [{ sourceStrokeId: "demo_rod", localPoints: toLocalPoints(points, { x: 0, y: 0 }), color: PALETTE.primaryInk, baseWidth: 3.5 }],
+    localTransform: { ...IDENTITY_ENTITY_TRANSFORM },
+    visible: true,
     drawOrder: 7,
   };
 }
@@ -77,9 +80,10 @@ export function buildFishLineAttachment(
     id: "fish_line",
     kind: "held_tool",
     boneId: "right_hand",
-    localPoints: toLocalPoints(points, { x: 0, y: 0 }),
-    color: PALETTE.primaryInk,
-    baseWidth: 2,
+    sourceStrokeIds: ["fish_line"],
+    strokes: [{ sourceStrokeId: "fish_line", localPoints: toLocalPoints(points, anchor), color: PALETTE.primaryInk, baseWidth: 2 }],
+    localTransform: { ...IDENTITY_ENTITY_TRANSFORM },
+    visible: true,
     drawOrder: 6,
   };
 }

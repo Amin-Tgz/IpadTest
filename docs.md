@@ -69,6 +69,17 @@ Living document. Each plan phase ends with: test result, commit hash, notes, ope
 - iPad touch testing not possible in this environment — verify Pencil flow on device (pressure, eraser, fullscreen).
 - Plan §31 Test C (shoe loop) passed end-to-end with real provider images; on-device delight check remains.
 
+## Repair checkpoint — core interaction and transform ownership
+
+- Normal startup no longer creates a sample character, rig, or running quest. The sample remains an explicit demo action only.
+- Pointer input now keeps a transient stroke rendered on every frame, consumes coalesced pointer samples, and commits only at pointer-up. Repeated undo now walks backwards through active strokes.
+- Rig geometry is character-local. Rendering follows: rest-local point → posed/skinned local point → persistent entity transform → camera world-to-screen. Root rotation is applied by the runtime.
+- Walking updates the persistent entity transform, so the next idle frame, anchors, attachments, and camera follow all retain the pond position.
+- Rigged strokes retain source stroke order, samples, and pressure for perfect-freehand rendering. Semantic manifest parts constrain bone assignment where available.
+- Attachments retain independent source strokes and transfer their render ownership from the world layer. Attachment source IDs are stable and rods do not remove shoes.
+- AI drawing captures label full-scene and delta images, state the delta crop in full-image coordinates, and render the baseline only once through the camera transform.
+- Server configuration is loaded at app creation rather than module import; response-format mode honors `AI_JSON_MODE` on its first attempt.
+
 
 ## Phase 2 — Joint Editor (planned)
 
@@ -93,3 +104,12 @@ Rod attach, cast animation, fish sequence.
 ## Phase 7 — Polish (planned)
 
 PWA fullscreen, session reset, perf.
+
+## Phaser living-world checkpoint
+
+- Phaser 4.2.1 owns the Canvas frame lifecycle, camera bridge, input surface, and Matter physics world while preserving pressure-sensitive Pencil strokes.
+- Character creation uses a 30%-wide left guide and a non-upscaled cropped capture with X/Y crop-aware coordinate normalization.
+- AI analysis is manual-only through `زنده‌اش کن` and `▶ ببین نقاشی‌مو`; failed reviews retain their checkpoint.
+- Character manifests migrate to v2 with AI part polygons and Pencil-lasso segment overrides; bone-owned segments overlap at seams.
+- Drawing analysis can return validated capability actions and collision semantics for platforms, stairs, slopes, obstacles, and dynamic objects.
+- On-screen diagnostics were removed while console logs remain; primary bottom actions have 15% larger text, padding, and touch height.

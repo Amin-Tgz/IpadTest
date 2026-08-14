@@ -4,6 +4,7 @@ export class SpeechBubble {
   private el: HTMLDivElement | null = null;
   private tail: HTMLDivElement | null = null;
   private resizeListener = (): void => void 0;
+  private thinkingTimer: number | null = null;
   private root: HTMLElement;
 
   constructor(root: HTMLElement) {
@@ -74,6 +75,8 @@ export class SpeechBubble {
   }
 
   hide(): void {
+    if (this.thinkingTimer !== null) window.clearInterval(this.thinkingTimer);
+    this.thinkingTimer = null;
     window.removeEventListener("resize", this.resizeListener);
     this.el?.remove();
     this.el = null;
@@ -82,6 +85,20 @@ export class SpeechBubble {
 
   isVisible(): boolean {
     return this.el !== null;
+  }
+
+  updateAnchor(anchorScreen: { x: number; y: number }): void {
+    this.position(anchorScreen);
+  }
+
+  showThinking(anchorScreen: { x: number; y: number }): void {
+    this.show("•", anchorScreen, { maxWidthPx: 120 });
+    let count = 1;
+    this.thinkingTimer = window.setInterval(() => {
+      if (!this.el) return;
+      count = (count % 3) + 1;
+      this.el.firstChild!.textContent = "•".repeat(count);
+    }, 360);
   }
 
   private position(anchorScreen: { x: number; y: number }): void {

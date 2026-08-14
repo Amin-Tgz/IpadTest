@@ -2,6 +2,7 @@ import type { StrokeStore, Stroke } from "../drawing/stroke-store.js";
 import { resampleUniform } from "../drawing/stroke-resampler.js";
 import type { CharacterManifest, JointManifest, FaceManifest } from "./character-manifest.js";
 import type { JointId } from "../app/constants.js";
+import type { EntityTransform } from "./entity-transform.js";
 
 export interface RigJoint {
   id: JointId;
@@ -13,6 +14,7 @@ export interface RigJoint {
 export interface RigPoint {
   x: number;
   y: number;
+  pressure: number;
   jointId: JointId;
 }
 
@@ -40,15 +42,18 @@ export interface Rig {
   joints: RigJoint[];
   strokes: RigStroke[];
   face: RigFace;
+  transform: EntityTransform;
 }
 
 const FACE_RADIUS = 14;
 
 export function buildRig(manifest: CharacterManifest, store: StrokeStore): Rig {
+  const root = manifest.joints.find((joint) => joint.parent === null) ?? manifest.joints[0];
+  const origin = root ? { x: root.x, y: root.y } : { x: 0, y: 0 };
   const joints: RigJoint[] = manifest.joints.map((j: JointManifest) => ({
     id: j.id,
-    restX: j.x,
-    restY: j.y,
+    restX: j.x - origin.x,
+    restY: j.y - origin.y,
     parent: j.parent,
   }));
 
@@ -56,12 +61,16 @@ export function buildRig(manifest: CharacterManifest, store: StrokeStore): Rig {
     .all()
     .filter((s) => s.active && manifest.includedStrokeIds.includes(s.id));
 
-  const includedIds = new Set(manifest.includedStrokeIds);
-  const rigStrokes = strokes.map((s) => buildRigStroke(s, joints, includedIds));
+  const rigStrokes = strokes.map((s) => buildRigStroke(s, joints, manifest, origin));
 
-  const face = buildFace(manifest.face, rigStrokes, joints);
+  const face = buildFace(toLocalFace(manifest.face, origin), rigStrokes, joints);
 
-  return { joints, strokes: rigStrokes, face };
+  return {
+    joints,
+    strokes: rigStrokes,
+    face,
+    transform: { x: origin.x, y: origin.y, rotation: 0, scaleX: 1, scaleY: 1 },
+  };
 }
 
 export function nearestJoint(
@@ -84,22 +93,75 @@ export function nearestJoint(
 function buildRigStroke(
   stroke: Stroke,
   joints: RigJoint[],
-  includedIds: Set<string>,
+  manifest: CharacterManifest,
+  origin: { x: number; y: number },
 ): RigStroke {
-  const resampled = resampleUniform(stroke.points, 6).points;
   return {
     id: stroke.id,
     color: stroke.color,
     baseWidth: stroke.baseWidth,
-    points: resampled.map((p) => {
-      const nearest = nearestJoint(p.x, p.y, joints);
+    points: stroke.points.map((p) => {
+      const local = { x: p.x - origin.x, y: p.y - origin.y };
+      const part = partAtPoint(p, stroke.id, manifest);
+      const candidates = partCandidates(part, joints);
+      const nearest = nearestJoint(local.x, local.y, candidates);
       return {
-        x: p.x,
-        y: p.y,
+        x: local.x,
+        y: local.y,
+        pressure: p.pressure,
         jointId: nearest ? nearest.id : ("root" as JointId),
       };
     }),
   };
+}
+
+function partAtPoint(
+  point: { x: number; y: number },
+  strokeId: string,
+  manifest: CharacterManifest,
+): string | undefined {
+  for (let index = (manifest.segmentOverrides?.length ?? 0) - 1; index >= 0; index--) {
+    const override = manifest.segmentOverrides![index];
+    if (pointInPolygon(point, override.polygon)) return override.part;
+  }
+  const region = manifest.parts.find((part) =>
+    part.strokeIds.includes(strokeId) && part.polygon && pointInPolygon(point, part.polygon),
+  );
+  return region?.part ?? manifest.parts.find((part) => part.strokeIds.includes(strokeId))?.part;
+}
+
+export function pointInPolygon(
+  point: { x: number; y: number },
+  polygon: Array<{ x: number; y: number }>,
+): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    const crosses = (a.y > point.y) !== (b.y > point.y) &&
+      point.x < ((b.x - a.x) * (point.y - a.y)) / ((b.y - a.y) || Number.EPSILON) + a.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function toLocalFace(face: FaceManifest, origin: { x: number; y: number }): FaceManifest {
+  const local = (point: { x: number; y: number } | undefined) =>
+    point ? { x: point.x - origin.x, y: point.y - origin.y } : undefined;
+  return { leftEye: local(face.leftEye), rightEye: local(face.rightEye), mouth: local(face.mouth) };
+}
+
+function partCandidates(part: string | undefined, joints: RigJoint[]): RigJoint[] {
+  const names = part?.toLowerCase() ?? "";
+  const matching = joints.filter((joint) => {
+    if (names.includes("head") || names.includes("hair") || names.includes("hat")) return joint.id === "head";
+    if (names.includes("left") && (names.includes("arm") || names.includes("hand"))) return joint.id.startsWith("left_") && (joint.id.includes("shoulder") || joint.id.includes("elbow") || joint.id.includes("hand"));
+    if (names.includes("right") && (names.includes("arm") || names.includes("hand"))) return joint.id.startsWith("right_") && (joint.id.includes("shoulder") || joint.id.includes("elbow") || joint.id.includes("hand"));
+    if (names.includes("left") && (names.includes("leg") || names.includes("foot"))) return joint.id.startsWith("left_") && (joint.id.includes("hip") || joint.id.includes("knee") || joint.id.includes("foot"));
+    if (names.includes("right") && (names.includes("leg") || names.includes("foot"))) return joint.id.startsWith("right_") && (joint.id.includes("hip") || joint.id.includes("knee") || joint.id.includes("foot"));
+    return names.includes("torso") || names.includes("body") ? joint.id === "root" || joint.id === "torso" : false;
+  });
+  return matching.length > 0 ? matching : joints;
 }
 
 function buildFace(

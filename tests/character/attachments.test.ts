@@ -84,4 +84,24 @@ describe("buildAttachmentFromObject", () => {
     const idMap = {} as unknown as IdMap;
     expect(buildAttachmentFromObject({ type: "shoe", category: "wearable", boundingBox: { x: 0, y: 0, width: 10, height: 10 }, attachTo: null, anchor: null }, store, idMap, rt, 0)).toBeNull();
   });
+
+  it("preserves each source stroke and transfers render ownership", () => {
+    const store = new StrokeStore();
+    for (const id of ["shoe_1", "shoe_2", "shoe_3"]) {
+      store.add({
+        id,
+        points: [{ x: 60, y: 315, pressure: 0.5, time: 0 }, { x: 90, y: 325, pressure: 0.5, time: 1 }],
+        color: "#F7F5EE", baseWidth: 4, tool: "pen", createdAt: 0, worldSpace: true, entityId: null, active: true, groupId: null,
+      });
+    }
+    const rt = new RigRuntime(buildRig(manifest, store), () => 0);
+    const idMap = { sampleStrokesInRegion: () => new Set(["shoe_1", "shoe_2", "shoe_3"]) } as unknown as IdMap;
+    const attachment = buildAttachmentFromObject(
+      { type: "shoe", category: "wearable", boundingBox: { x: 50, y: 300, width: 60, height: 40 }, attachTo: "left_foot", anchor: { x: 80, y: 320 } },
+      store, idMap, rt, 0, new Set(["shoe_1", "shoe_2", "shoe_3"]),
+    )!;
+    expect(attachment.strokes).toHaveLength(3);
+    expect(attachment.sourceStrokeIds).toEqual(["shoe_1", "shoe_2", "shoe_3"]);
+    expect(store.byId("shoe_1")?.entityId).toBe(attachment.id);
+  });
 });

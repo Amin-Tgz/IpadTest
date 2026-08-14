@@ -23,14 +23,21 @@ export interface FaceManifest {
 export interface PartManifest {
   part: string;
   strokeIds: string[];
+  polygon?: Array<{ x: number; y: number }>;
+}
+
+export interface SegmentOverride {
+  part: string;
+  polygon: Array<{ x: number; y: number }>;
 }
 
 export interface CharacterManifest {
-  version: "1.0";
+  version: "1.0" | "2.0";
   joints: JointManifest[];
   face: FaceManifest;
   parts: PartManifest[];
   includedStrokeIds: string[];
+  segmentOverrides?: SegmentOverride[];
   createdAt: number;
 }
 
@@ -116,7 +123,7 @@ export function buildManifest(
     const strokeIds = idMap.sampleStrokesInPolygon(store, polygonWorld);
     const present = strokes.filter((s) => strokeIds.has(s.id)).map((s) => s.id);
     if (present.length > 0) {
-      parts.push({ part: region.part, strokeIds: present });
+      parts.push({ part: region.part, strokeIds: present, polygon: polygonWorld });
       present.forEach((id) => covered.add(id));
     }
   }
@@ -127,12 +134,25 @@ export function buildManifest(
   }
 
   return {
-    version: "1.0",
+    version: "2.0",
     joints,
     face,
     parts,
     includedStrokeIds: [...included],
+    segmentOverrides: [],
     createdAt: Date.now(),
+  };
+}
+
+export function migrateManifest(manifest: CharacterManifest): CharacterManifest {
+  if (manifest.version === "2.0") {
+    return { ...manifest, segmentOverrides: manifest.segmentOverrides ?? [] };
+  }
+  return {
+    ...manifest,
+    version: "2.0",
+    parts: manifest.parts.map((part) => ({ ...part })),
+    segmentOverrides: [],
   };
 }
 

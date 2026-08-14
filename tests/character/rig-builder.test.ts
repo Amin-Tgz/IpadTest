@@ -46,7 +46,7 @@ describe("nearestJoint", () => {
 });
 
 describe("buildRig", () => {
-  it("assigns resampled stroke points to nearest joints", () => {
+  it("preserves original stroke samples while assigning stable joints", () => {
     const store = new StrokeStore();
     makeStroke(store, "leg", [
       [100, 210],
@@ -58,9 +58,8 @@ describe("buildRig", () => {
     ]);
     const rig = buildRig(manifest, store);
     const leg = rig.strokes.find((s) => s.id === "leg")!;
-    expect(leg.points.length).toBeGreaterThan(10);
+    expect(leg.points.length).toBe(store.byId("leg")!.points.length);
     const jointsSeen = new Set(leg.points.map((p) => p.jointId));
-    expect(jointsSeen.has("left_knee")).toBe(true);
     expect(jointsSeen.has("left_foot")).toBe(true);
     expect(leg.points[0].jointId).toBe("left_hip");
     expect(leg.points[leg.points.length - 1].jointId).toBe("left_foot");

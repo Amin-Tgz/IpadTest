@@ -18,6 +18,8 @@ export interface PointerInputCallbacks {
   onStrokeEnd?: (stroke: Stroke) => void;
   onPencilMove?: (event: PencilEvent) => void;
   onPencilDown?: (event: PencilEvent) => void;
+  onErase?: (affectedStrokes: number) => void;
+  onEraserMove?: (point: { x: number; y: number }) => void;
 }
 
 export interface PointerInterceptor {
@@ -32,7 +34,17 @@ export class PointerInput {
   private sessionStart = performance.now();
   private groupOpenAt: number | null = null;
   private groupId: string | null = null;
+  private tool: "pen" | "eraser" = "pen";
+  private erasingPointerId: number | null = null;
   interceptor: PointerInterceptor | null = null;
+
+  get liveStroke(): Stroke | null {
+    return this.current;
+  }
+
+  setTool(tool: "pen" | "eraser"): void {
+    this.tool = tool;
+  }
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -44,10 +56,11 @@ export class PointerInput {
       maxPointsPerStroke: 8000,
     },
   ) {
-    canvas.addEventListener("pointerdown", this.onPointerDown);
-    canvas.addEventListener("pointermove", this.onPointerMove);
-    canvas.addEventListener("pointerup", this.onPointerUp);
-    canvas.addEventListener("pointercancel", this.onPointerUp);
+    canvas.style.touchAction = "none";
+    canvas.addEventListener("pointerdown", this.onPointerDown, { passive: false });
+    canvas.addEventListener("pointermove", this.onPointerMove, { passive: false });
+    canvas.addEventListener("pointerup", this.onPointerUp, { passive: false });
+    canvas.addEventListener("pointercancel", this.onPointerUp, { passive: false });
     canvas.addEventListener("contextmenu", this.onContextMenu);
   }
 
@@ -71,6 +84,8 @@ export class PointerInput {
   }
 
   private onPointerDown = (e: PointerEvent): void => {
+    e.preventDefault();
+    if (e.pointerType === "touch") return;
     if (e.pointerType === "mouse" && e.button !== 0) return;
     const p = this.toWorld(e.clientX, e.clientY);
     if (this.interceptor && this.interceptor.down(p, e)) {
@@ -78,6 +93,11 @@ export class PointerInput {
       return;
     }
     this.canvas.setPointerCapture(e.pointerId);
+    if (this.tool === "eraser") {
+      this.erasingPointerId = e.pointerId;
+      this.eraseAt(p);
+      return;
+    }
     const pressure = this.normalizePressure(e);
     const now = performance.now() - this.sessionStart;
 
@@ -104,39 +124,48 @@ export class PointerInput {
   };
 
   private onPointerMove = (e: PointerEvent): void => {
+    e.preventDefault();
+    if (this.erasingPointerId === e.pointerId) {
+      this.eraseAt(this.toWorld(e.clientX, e.clientY));
+      return;
+    }
+    const events = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [e];
+    for (const event of events) this.appendPointerPoint(event);
+  };
+
+  private appendPointerPoint(e: PointerEvent): void {
     const p = this.toWorld(e.clientX, e.clientY);
     const pressure = this.normalizePressure(e);
     this.callbacks.onPencilMove?.({ x: p.x, y: p.y, pressure });
-
     if (this.interceptor && this.interceptor.move(p, e)) return;
-
     if (!this.current || !this.lastPoint) return;
     const dist = Math.hypot(p.x - this.lastPoint.x, p.y - this.lastPoint.y);
-    if (dist < this.options.minPointDistance) return;
-    if (this.current.points.length >= this.options.maxPointsPerStroke) return;
-
-    this.current.points.push({
-      x: p.x,
-      y: p.y,
-      pressure,
-      time: performance.now() - this.sessionStart,
-    });
+    if (dist < this.options.minPointDistance || this.current.points.length >= this.options.maxPointsPerStroke) return;
+    this.current.points.push({ x: p.x, y: p.y, pressure, time: performance.now() - this.sessionStart });
     this.lastPoint = this.current.points[this.current.points.length - 1];
-  };
+  }
 
   private onPointerUp = (e: PointerEvent): void => {
+    e.preventDefault();
     const p = this.toWorld(e.clientX, e.clientY);
+    if (this.erasingPointerId === e.pointerId) {
+      this.erasingPointerId = null;
+      if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
+      return;
+    }
     if (this.interceptor && this.current === null) {
       this.interceptor.up(p, e);
       return;
     }
     if (!this.current) return;
+    if (e.type === "pointerup") this.appendPointerPoint(e);
     if (this.current.points.length > 1) {
       this.store.add(this.current);
       this.callbacks.onStrokeEnd?.(this.current);
     }
     this.current = null;
     this.lastPoint = null;
+    if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
   };
 
   private normalizePressure(e: PointerEvent): number {
@@ -144,5 +173,11 @@ export class PointerInput {
     if (e.pointerType === "touch") return 0.55;
     if (e.pressure > 0) return Math.min(1, Math.max(0, e.pressure));
     return 0.5;
+  }
+
+  private eraseAt(point: { x: number; y: number }): void {
+    this.callbacks.onEraserMove?.(point);
+    const affected = this.store.eraseNear(point);
+    if (affected > 0) this.callbacks.onErase?.(affected);
   }
 }

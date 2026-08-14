@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -17,5 +16,3 @@ export type ServerConfig = z.infer<typeof envSchema>;
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   return envSchema.parse(env);
 }
-
-export const config: ServerConfig = loadConfig();

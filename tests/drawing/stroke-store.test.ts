@@ -48,4 +48,17 @@ describe("stroke-store", () => {
     const ids = new Set([nextId("s"), nextId("s"), nextId("g")]);
     expect(ids.size).toBe(3);
   });
+
+  it("erases only the touched portion of an active user stroke", () => {
+    const store = new StrokeStore();
+    store.add({ ...makeStroke("line"), points: [
+      { x: 0, y: 0, pressure: 0.5, time: 0 }, { x: 10, y: 0, pressure: 0.5, time: 1 },
+      { x: 20, y: 0, pressure: 0.5, time: 2 }, { x: 30, y: 0, pressure: 0.5, time: 3 },
+      { x: 40, y: 0, pressure: 0.5, time: 4 }, { x: 50, y: 0, pressure: 0.5, time: 5 },
+      { x: 60, y: 0, pressure: 0.5, time: 6 },
+    ] });
+    expect(store.eraseNear({ x: 30, y: 0 }, 5)).toBe(1);
+    expect(store.byId("line")?.active).toBe(false);
+    expect(store.active()).toHaveLength(2);
+  });
 });

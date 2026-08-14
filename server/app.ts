@@ -1,9 +1,10 @@
+import "dotenv/config";
 import express, { type NextFunction, type Request, type Response } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
-import { config, type ServerConfig } from "./config.js";
+import { loadConfig, type ServerConfig } from "./config.js";
 import type { AIProvider } from "./ai/provider.js";
 import { OpenAICompatibleProvider } from "./ai/openai-compatible.js";
 import { analyzeCharacterRoute } from "./routes/analyze-character.js";
@@ -20,7 +21,7 @@ export interface AppDeps {
 }
 
 export function createApp(deps: AppDeps = {}) {
-  const cfg = deps.config ?? config;
+  const cfg = deps.config ?? loadConfig();
   const provider = deps.provider ?? new OpenAICompatibleProvider(cfg);
   const app = express();
 
@@ -58,7 +59,8 @@ export function createApp(deps: AppDeps = {}) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const app = createApp();
+  const config = loadConfig();
+  const app = createApp({ config });
   app.listen(config.PORT, () => {
     console.log(`[pencil-ai] server listening on http://localhost:${config.PORT}`);
   });

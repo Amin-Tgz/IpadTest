@@ -5,6 +5,8 @@ export type MotionId =
   | "idle"
   | "happy"
   | "confused"
+  | "scratch_head"
+  | "sad"
   | "talk"
   | "walk"
   | "stop_at_pond"
@@ -72,13 +74,15 @@ export function evaluateMotion(clip: MotionClip, timeMs: number): Pose {
 export const MOTION_CLIPS: Record<MotionId, MotionClip> = {
   spawn: {
     id: "spawn",
-    durationMs: 700,
+    durationMs: 950,
     loop: false,
     jointTracks: {},
     rootY: track([
-      [0, -30],
-      [0.45, 0],
-      [0.62, -6],
+      [0, 0],
+      [0.16, -8],
+      [0.42, -42],
+      [0.7, 0],
+      [0.82, -12],
       [1, 0],
     ]),
   },
@@ -170,6 +174,49 @@ export const MOTION_CLIPS: Record<MotionId, MotionClip> = {
         [1, 8],
       ]),
     },
+  },
+  scratch_head: {
+    id: "scratch_head",
+    durationMs: 1500,
+    loop: false,
+    jointTracks: {
+      head: track([[0, 0], [0.25, 8], [0.7, -4], [1, 0]]),
+      right_shoulder: track([[0, 0], [0.28, -115], [0.78, -108], [1, 0]]),
+      right_elbow: track([[0, 0], [0.28, 75], [0.48, 62], [0.68, 78], [1, 0]]),
+      right_hand: track([[0, 0], [0.4, 12], [0.55, -10], [0.7, 12], [1, 0]]),
+    },
+  },
+  sad: {
+    id: "sad",
+    durationMs: 1800,
+    loop: false,
+    jointTracks: {
+      head: track([
+        [0, 0],
+        [0.45, 16],
+        [1, 12],
+      ]),
+      torso: track([
+        [0, 0],
+        [0.45, 7],
+        [1, 5],
+      ]),
+      left_shoulder: track([
+        [0, 0],
+        [0.5, 18],
+        [1, 14],
+      ]),
+      right_shoulder: track([
+        [0, 0],
+        [0.5, -18],
+        [1, -14],
+      ]),
+    },
+    rootY: track([
+      [0, 0],
+      [0.5, 5],
+      [1, 3],
+    ]),
   },
   talk: {
     id: "talk",

@@ -10,6 +10,7 @@ import type { ServerConfig } from "../config.js";
 const bodySchema = z.object({
   image: z.string().min(100).max(20000000),
   deltaCrop: z.string().nullable().optional(),
+  deltaCropInImageA: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).nullable().optional(),
   canvas: z.object({
     width: z.number().min(1).max(CANVAS_MAX),
     height: z.number().min(1).max(CANVAS_MAX),
@@ -60,9 +61,13 @@ export function analyzeDrawingRoute(provider: AIProvider, config: ServerConfig) 
           role: "user" as const,
           content: [
             { type: "text" as const, text: "Analyze the newly drawn object." },
+            { type: "text" as const, text: `IMAGE A — full scene\nwidth: ${body.canvas.width}\nheight: ${body.canvas.height}` },
             { type: "image_url" as const, image_url: { url: body.image } },
             ...(body.deltaCrop
-              ? [{ type: "image_url" as const, image_url: { url: body.deltaCrop } }]
+              ? [
+                  { type: "text" as const, text: `IMAGE B — newly added strokes only\ncrop in IMAGE A: x=${body.deltaCropInImageA?.x ?? 0}, y=${body.deltaCropInImageA?.y ?? 0}, width=${body.deltaCropInImageA?.width ?? body.canvas.width}, height=${body.deltaCropInImageA?.height ?? body.canvas.height}` },
+                  { type: "image_url" as const, image_url: { url: body.deltaCrop } },
+                ]
               : []),
           ],
         },
@@ -113,6 +118,10 @@ export function analyzeDrawingRoute(provider: AIProvider, config: ServerConfig) 
       });
     } catch (error) {
       const status = error instanceof z.ZodError ? 400 : 422;
+      console.error("[pencil-ai] drawing_analysis_failed", {
+        status,
+        message: error instanceof Error ? error.message : "unknown error",
+      });
       res.status(status).json({
         error: "drawing_analysis_failed",
         message: error instanceof Error ? error.message : "unknown error",

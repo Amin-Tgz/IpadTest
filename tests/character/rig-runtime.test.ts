@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildRig } from "../../src/character/rig-builder.js";
 import { RigRuntime } from "../../src/character/rig-runtime.js";
+import { Camera } from "../../src/world/camera.js";
 import { StrokeStore } from "../../src/drawing/stroke-store.js";
 import type { CharacterManifest } from "../../src/character/character-manifest.js";
 
@@ -82,6 +83,42 @@ describe("RigRuntime forward kinematics", () => {
     expect(stroke[0].y).toBeCloseTo(190, 3);
   });
 
+  it("keeps entity movement after the pose returns to idle", () => {
+    const runtime = new RigRuntime(rig(), () => 0);
+    runtime.moveEntityTo(500, 200);
+    runtime.applyPose({ jointRotations: {}, rootDeltaX: 0, rootDeltaY: 0, rootRotation: 0 });
+    expect(runtime.jointWorld("root")).toMatchObject({ x: 500, y: 200 });
+    const [stroke] = runtime.transformedStrokePoints();
+    expect(stroke[0].x).toBeCloseTo(500, 3);
+  });
+
+  it("uses entity and camera transforms independently for anchors", () => {
+    const runtime = new RigRuntime(rig(), () => 0);
+    runtime.moveEntityTo(500, 200);
+    const camera = new Camera();
+    camera.setX(120);
+    expect(runtime.jointWorld("left_foot")).toMatchObject({ x: 500, y: 320 });
+    expect(runtime.jointScreen("left_foot", camera)).toMatchObject({ x: 380, y: 320 });
+    expect(runtime.jointWorld("left_foot")).toMatchObject({ x: 500, y: 320 });
+  });
+
+  it("applies root rotation rather than silently ignoring it", () => {
+    const runtime = new RigRuntime(rig(), () => 0);
+    runtime.applyPose({ jointRotations: {}, rootDeltaX: 0, rootDeltaY: 0, rootRotation: 90 });
+    const foot = runtime.jointWorld("left_foot")!;
+    expect(foot.x).toBeLessThan(45);
+    expect(foot.y).toBeCloseTo(200, 3);
+  });
+
+  it("uses the standard Y rotation term for asymmetric bone-local points", () => {
+    const runtime = new RigRuntime(rig(), () => 0);
+    runtime.applyPose({ jointRotations: { left_knee: 90 }, rootDeltaX: 0, rootDeltaY: 0, rootRotation: 0 });
+    const knee = runtime.jointWorld("left_knee")!;
+    const point = runtime.boneToWorld("left_knee", { x: 10, y: 20 });
+    expect(point.x).toBeCloseTo(knee.x - 20, 3);
+    expect(point.y).toBeCloseTo(knee.y + 10, 3);
+  });
+
   it("blinks by squashing eye groups", () => {
     const store = new StrokeStore();
     store.add({
@@ -134,9 +171,12 @@ describe("RigRuntime forward kinematics", () => {
       rootRotation: 0,
     });
 
-    const measure = (): number => {
+    const eyeYs = (): number[] => {
       const [eyeStroke] = runtime.transformedStrokePoints();
-      const ys = eyeStroke.map((p) => p.y);
+      return eyeStroke.map((p) => p.y);
+    };
+    const measure = (): number => {
+      const ys = eyeYs();
       return Math.max(...ys) - Math.min(...ys);
     };
 
@@ -147,6 +187,8 @@ describe("RigRuntime forward kinematics", () => {
     }
     const during = measure();
     expect(during).toBeLessThan(before * 0.9);
+    expect(Math.min(...eyeYs())).toBeGreaterThan(85);
+    expect(Math.max(...eyeYs())).toBeLessThan(110);
     clock += 1000;
     runtime.update(clock);
     expect(measure()).toBeGreaterThan(before * 0.95);

@@ -58,4 +58,22 @@ describe("sanitizeDrawingAnalysis", () => {
     input.mappedAction = "fly_away";
     expect(() => sanitizeDrawingAnalysis(input, { width: 512, height: 512 })).toThrow();
   });
+
+  it.each(["answer_question", "ground_erased", "decorate", "react"])(
+    "accepts the open-ended %s action",
+    (mappedAction) => {
+      const input = structuredClone(base);
+      input.goalId = "free_draw";
+      input.mappedAction = mappedAction;
+      expect(sanitizeDrawingAnalysis(input, { width: 512, height: 512 }).mappedAction).toBe(mappedAction);
+    },
+  );
+
+  it("accepts only registered character actions", () => {
+    const input = structuredClone(base) as typeof base & { action: unknown };
+    input.action = { type: "scratch_head", targetObjectIndex: null, direction: null, durationMs: 1200 };
+    expect(sanitizeDrawingAnalysis(input, { width: 512, height: 512 }).action?.type).toBe("scratch_head");
+    input.action = { type: "teleport_anywhere", targetObjectIndex: null, direction: null, durationMs: 1200 };
+    expect(() => sanitizeDrawingAnalysis(input, { width: 512, height: 512 })).toThrow();
+  });
 });

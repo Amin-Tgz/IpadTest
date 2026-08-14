@@ -35,4 +35,27 @@ describe("ground-path", () => {
     const { tangentAngle } = slope.pointAtDistance(20);
     expect(tangentAngle).toBeCloseTo(Math.PI / 4, 5);
   });
+
+  it("erases only the touched part of the visible ground", () => {
+    const ground = new GroundPath([
+      { x: 0, y: 100 },
+      { x: 300, y: 100 },
+    ]);
+
+    expect(ground.eraseNear({ x: 150, y: 105 }, 24)).toBe(true);
+    expect(ground.erased).toBe(true);
+    const sections = ground.screenPolylines(0);
+    expect(sections).toHaveLength(2);
+    expect(sections[0].at(-1)?.[0]).toBeLessThan(150);
+    expect(sections[1][0][0]).toBeGreaterThan(150);
+  });
+
+  it("does not erase the ground when the eraser is far away", () => {
+    const ground = new GroundPath([
+      { x: 0, y: 100 },
+      { x: 300, y: 100 },
+    ]);
+    expect(ground.eraseNear({ x: 150, y: 180 }, 24)).toBe(false);
+    expect(ground.screenPolylines(0)).toHaveLength(1);
+  });
 });

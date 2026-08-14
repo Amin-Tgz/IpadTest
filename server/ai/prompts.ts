@@ -69,6 +69,7 @@ function jointHints(): string {
 export function characterAnalysisPrompt(width: number, height: number): string {
   return [
     "You analyze a child-like line drawing of a character. The drawing is white strokes on a dark blue background.",
+    "A long horizontal white baseline is pre-authored scenery, not user ink. Never include it in the character boundingBox, partRegions, or joints.",
     `The image is ${width}x${height} pixels. Coordinates use pixel units, origin at TOP-LEFT, y grows DOWN.`,
     "Return ONLY JSON. Report every visible joint; skip joints that are clearly not visible.",
     "A joint must sit ON the ink of the drawing (on the stroke), not in empty space.",

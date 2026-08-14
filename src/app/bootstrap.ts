@@ -9,7 +9,7 @@ import { SpeechBubble } from "../story/speech-bubble.js";
 import { buildSampleCharacter, buildSampleManifest } from "./sample-character.js";
 import { AnalysisSpike } from "../character/analysis-spike.js";
 import { JointEditor } from "../character/joint-editor.js";
-import { buildManifest, type CharacterManifest } from "../character/character-manifest.js";
+import { buildManifest, migrateManifest, type CharacterManifest } from "../character/character-manifest.js";
 import { buildRig, type Rig } from "../character/rig-builder.js";
 import { RigRuntime } from "../character/rig-runtime.js";
 import { AnimationController } from "../animation/animation-controller.js";
@@ -17,26 +17,44 @@ import { MOTION_CLIPS } from "../animation/motion-clips.js";
 import { QuestEngine, type StoryCommand } from "../story/quest-engine.js";
 import { PondScene } from "../world/pond-scene.js";
 import { Walker, easeToward } from "../world/walker.js";
-import {
-  buildShoeAttachment,
-  buildRodAttachment,
-  buildFishLineAttachment,
-} from "../world/hardcoded-objects.js";
+import { buildFishLineAttachment } from "../world/hardcoded-objects.js";
 import type { Attachment } from "../character/attachments.js";
-import { buildAttachmentFromObject } from "../character/attachments.js";
+import { attachmentWorldPoints, buildAttachmentFromObject } from "../character/attachments.js";
 import { captureViewport, captureDelta } from "../ai/capture.js";
 import { analyzeDrawing } from "../ai/ai-client.js";
 import { imageToWorldX, imageToWorldY, worldToImage, type CaptureMapping } from "../ai/normalization.js";
 import { looksPersian } from "../ai/text.js";
 import type { DrawingAnalysis } from "../ai/schemas.js";
+import type { AIActionRequest } from "../ai/schemas.js";
 import { createSessionStorage } from "../storage/indexed-db.js";
-import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO, INACTIVITY_MS } from "./constants.js";
+import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO } from "./constants.js";
+import { createDiagnostics } from "./diagnostics.js";
+import { PhaserWorldController } from "../world/phaser-world.js";
+import { REPAIR_PARTS, SegmentRepairEditor, type RepairPart } from "../character/segment-repair.js";
+import { WorldEntityRegistry, type WorldEntity } from "../world/world-entity.js";
+import type { PhysicsShape } from "../world/phaser-world.js";
+import { hasReviewableChanges } from "./manual-review.js";
+import { validateActionRequest } from "../ai/action-protocol.js";
 
 const appEl = (() => {
   const el = document.getElementById("app");
   if (!el) throw new Error("missing #app element");
   return el;
 })();
+
+// Keep palm contact inside the drawing surface from becoming browser text
+// selection, image dragging, a context menu, or an iOS touch callout. Buttons
+// remain tappable; Apple Pencil drawing arrives through Pointer Events.
+const blockBrowserGesture = (event: Event): void => {
+  if (event.target instanceof HTMLButtonElement || (event.target instanceof Element && event.target.closest("button"))) return;
+  event.preventDefault();
+};
+document.addEventListener("selectstart", blockBrowserGesture, { passive: false });
+document.addEventListener("dragstart", blockBrowserGesture, { passive: false });
+document.addEventListener("contextmenu", blockBrowserGesture, { passive: false });
+appEl.addEventListener("touchstart", blockBrowserGesture, { passive: false });
+appEl.addEventListener("touchmove", blockBrowserGesture, { passive: false });
+appEl.addEventListener("gesturestart", blockBrowserGesture, { passive: false });
 
 function getContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
   const ctx = canvas.getContext("2d");
@@ -47,14 +65,17 @@ function getContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
 const canvas = document.createElement("canvas");
 appEl.appendChild(canvas);
 const ctx = getContext(canvas);
+let phaserWorld: PhaserWorldController | null = null;
 
 const appState = new AppStateController();
+const diagnostics = createDiagnostics(appEl);
 const store = new StrokeStore();
 const camera = new Camera();
 const renderer = new StrokeRenderer();
 const bubble = new SpeechBubble(appEl);
 const idMap = new IdMap();
 const storage = createSessionStorage();
+const worldEntities = new WorldEntityRegistry();
 
 const getViewport = () => {
   const { viewportWidth: width, viewportHeight: height } = appState.get();
@@ -62,7 +83,7 @@ const getViewport = () => {
 };
 
 const editor = new JointEditor(store, getViewport);
-const spike = new AnalysisSpike(store, camera, getViewport, () => groundPath, bubble);
+const spike = new AnalysisSpike(store, camera, getViewport, () => groundPath, bubble, diagnostics, () => characterGuideBox());
 const animController = new AnimationController();
 const quest = new QuestEngine();
 
@@ -77,23 +98,28 @@ let walking = false;
 let awaitingGoalId: string | null = null;
 let checkpoint = 0;
 let analysisInFlight = false;
+let groundChangePending = false;
 let pendingDetected: DrawingAnalysis | null = null;
+let pendingSourceStrokeIds = new Set<string>();
 let lastPencil: PencilEvent | null = null;
 let pencilDown = false;
-let idleTimer: number | null = null;
 let bubbleTimer: number | null = null;
 let lastFrame = performance.now();
+let segmentRepair: SegmentRepairEditor | null = null;
 
-function activateRig(rig: Rig): void {
+function activateRig(rig: Rig, playSpawn = true): void {
   rigRuntime = new RigRuntime(rig);
+  phaserWorld?.detachCharacter();
+  phaserWorld?.attachCharacter(rigRuntime);
   riggedStrokeIds = new Set(rig.strokes.map((s) => s.id));
+  if (!playSpawn) return;
   animController.play(MOTION_CLIPS.spawn);
   animController.onClipEnd = (clipId) => {
     if (clipId === "spawn") {
       animController.playById("idle");
       if (!storyStarted) {
         storyStarted = true;
-        startStory();
+        startFreePlay();
       } else if (!greeted) {
         greeted = true;
         bubble.show("سلام! پس این تو همونی هستی…", headAnchorScreen());
@@ -102,13 +128,15 @@ function activateRig(rig: Rig): void {
   };
 }
 
-function startStory(): void {
-  appState.setMode("live");
-  quest.trigger({ type: "character_alive" });
+function startFreePlay(): void {
+  showStoryBubble("هر چیزی دوست داری بکش یا بنویس؛ من واکنش نشان می‌دهم.");
+  beginAwaitingDrawing("free_draw");
 }
 
-function replaceCharacter(manifest: CharacterManifest, deactivateSample: boolean): void {
-  activateRig(buildRig(manifest, store));
+function replaceCharacter(manifest: CharacterManifest, deactivateSample: boolean, playSpawn = true): void {
+  manifest = migrateManifest(manifest);
+  activeManifest = manifest;
+  activateRig(buildRig(manifest, store), playSpawn);
   attachments = [];
   if (deactivateSample) {
     for (const stroke of store.all()) {
@@ -130,6 +158,7 @@ function resize(): void {
   canvas.style.height = `${h}px`;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   appState.setViewport(w, h);
+  phaserWorld?.resize(w, h);
   rebuildWorld();
 }
 
@@ -142,16 +171,37 @@ function rebuildWorld(): void {
   ]);
   if (!worldBuilt) {
     worldBuilt = true;
-    buildSampleCharacter(store, w * 0.34, baselineY);
-    replaceCharacter(buildSampleManifest(store, w * 0.34, baselineY), false);
     const pondX = Math.round(w * 1.45);
     pond = new PondScene(pondX, baselineY - 26, 190, 72);
     walker = new Walker(groundPath, pondX - 70);
   }
+  phaserWorld?.configureGround(w, baselineY);
 }
 
 let groundPath = new GroundPath([{ x: 0, y: 0 }, { x: 1, y: 0 }]);
 let worldBuilt = false;
+let demoLoaded = false;
+
+function characterGuideBox(): { x: number; y: number; width: number; height: number } {
+  const { viewportWidth: width, viewportHeight: height } = appState.get();
+  const top = height * 0.16;
+  const baseline = height * BASE_LINE_Y_RATIO;
+  return {
+    x: camera.state.x + width * 0.08,
+    y: top,
+    width: width * 0.3,
+    height: baseline - top,
+  };
+}
+
+function loadSampleDemo(): void {
+  if (demoLoaded) return;
+  const { viewportWidth: width, viewportHeight: height } = appState.get();
+  const baselineY = Math.round(height * BASE_LINE_Y_RATIO);
+  const originX = width * 0.34;
+  buildSampleCharacter(store, originX, baselineY);
+  demoLoaded = true;
+}
 
 let saveTimer: number | null = null;
 
@@ -166,7 +216,16 @@ function scheduleSave(): void {
         .filter((s) => s.active)
         .map((s) => s),
     );
-    void storage.saveQuest({ state: quest.state, walking });
+    void storage.saveQuest({
+      version: 2,
+      state: quest.state,
+      walking,
+      checkpoint,
+      attachments,
+      worldEntities: worldEntities.all(),
+      entityTransform: rigRuntime?.entityTransform ?? null,
+      camera: camera.state,
+    });
   }, 1500);
 }
 
@@ -175,7 +234,16 @@ async function restoreSession(): Promise<void> {
   try {
     const savedStrokes = await storage.loadStrokes<Array<Record<string, unknown>>>();
     const savedManifest = await storage.loadManifest<CharacterManifest>();
-    const savedQuest = await storage.loadQuest<{ state: string; walking: boolean }>();
+    const savedQuest = await storage.loadQuest<{
+      version?: number;
+      state: string;
+      walking: boolean;
+      checkpoint?: number;
+      attachments?: Attachment[];
+      worldEntities?: WorldEntity[];
+      entityTransform?: { x: number; y: number; rotation: number; scaleX: number; scaleY: number } | null;
+      camera?: { x: number; y: number };
+    }>();
     if (savedStrokes && savedStrokes.length > 0) {
       for (const raw of savedStrokes) {
         const points = (raw.points as Array<{ x: number; y: number; pressure: number; time: number }>) ?? [];
@@ -196,10 +264,20 @@ async function restoreSession(): Promise<void> {
     if (savedManifest && savedManifest.joints && savedManifest.joints.length > 0) {
       const ids = new Set(store.all().map((s) => s.id));
       if (savedManifest.includedStrokeIds.every((id) => ids.has(id))) {
-        replaceCharacter(savedManifest, true);
-        if (savedQuest?.state === "AWAIT_SHOES" || savedQuest?.state === "AWAIT_TOOL") {
-          beginAwaitingDrawing(savedQuest.state === "AWAIT_SHOES" ? "draw_shoes" : "draw_fishing_tool");
+        replaceCharacter(savedManifest, true, false);
+        if (savedQuest?.entityTransform && rigRuntime) rigRuntime.setEntityTransform(savedQuest.entityTransform);
+        if (savedQuest?.attachments) attachments = savedQuest.attachments;
+        for (const entity of savedQuest?.worldEntities ?? []) {
+          worldEntities.upsert(entity);
+          if (entity.physicsShape) phaserWorld?.addEntity({ id: entity.id, shape: entity.physicsShape, ...entity.bounds });
         }
+        if (savedQuest?.camera) {
+          camera.setX(savedQuest.camera.x);
+          camera.state.y = savedQuest.camera.y;
+        }
+        checkpoint = savedQuest?.checkpoint ?? store.count();
+        storyStarted = true;
+        beginAwaitingDrawing("free_draw");
       }
     }
   } catch (error) {
@@ -207,27 +285,34 @@ async function restoreSession(): Promise<void> {
   }
 }
 
+function isQuestState(value: string): value is import("../story/quest-engine.js").QuestState {
+  return ["DRAW_CHARACTER", "SPAWN", "AWAIT_SHOES", "EQUIP_SHOES", "WALK_TO_POND", "REQUEST_TOOL", "AWAIT_TOOL", "EQUIP_TOOL", "FISHING", "ENDING"].includes(value);
+}
+
 function headAnchorScreen(): { x: number; y: number } {
   const { viewportWidth: w, viewportHeight: h } = appState.get();
-  const root = rigRuntime?.restJoint("head") ?? { x: w * 0.34, y: h * 0.4 };
-  return camera.worldToScreen({ x: root.x, y: root.y - 60 });
+  const head = rigRuntime?.jointScreen("head", camera);
+  return head ? { x: head.x, y: head.y - 60 } : { x: w * 0.5, y: h * 0.4 };
 }
 
 function showStoryBubble(text: string): void {
   if (bubbleTimer !== null) window.clearTimeout(bubbleTimer);
   bubble.show(text, headAnchorScreen());
+  if (rigRuntime) rigRuntime.talkActive = true;
   bubbleTimer = window.setTimeout(() => {
     bubbleTimer = null;
     bubble.hide();
+    if (rigRuntime) rigRuntime.talkActive = false;
     quest.trigger({ type: "bubble_shown" });
   }, 2600);
 }
 
-function beginAwaitingDrawing(goalId: string): void {
+function beginAwaitingDrawing(goalId: string, resetCheckpoint = true): void {
   awaitingGoalId = goalId;
-  checkpoint = store.count();
+  if (resetCheckpoint) checkpoint = store.count();
   analysisInFlight = false;
   appState.setMode("awaiting");
+  refreshReviewControls();
 }
 
 function jointsInImageCoords(): Array<{ id: string; x: number; y: number }> {
@@ -241,9 +326,9 @@ function jointsInImageCoords(): Array<{ id: string; x: number; y: number }> {
   const result: Array<{ id: string; x: number; y: number }> = [];
   if (!rigRuntime) return result;
   for (const id of ["left_foot", "right_foot", "left_hand", "right_hand"] as const) {
-    const rest = rigRuntime.restJoint(id);
-    if (rest) {
-      const img = worldToImage(rest, mapping);
+    const world = rigRuntime.jointWorld(id);
+    if (world) {
+      const img = worldToImage(world, mapping);
       result.push({ id, x: img.x, y: img.y });
     }
   }
@@ -257,12 +342,13 @@ async function resolveDrawingAttempt(): Promise<void> {
     .all()
     .slice(checkpoint)
     .filter((s) => s.active && s.entityId === null);
-  if (newStrokes.length === 0) return;
+  if (newStrokes.length === 0 && !groundChangePending) return;
 
   analysisInFlight = true;
+  diagnostics.info("drawing_analysis_started", { goalId, newStrokeCount: newStrokes.length });
   awaitingGoalId = null;
   appState.setMode("analyzing");
-  bubble.show("بذار ببینم چی کشیدی…", headAnchorScreen());
+  bubble.showThinking(headAnchorScreen());
   animController.playById("confused");
   let succeeded = false;
 
@@ -272,20 +358,13 @@ async function resolveDrawingAttempt(): Promise<void> {
       targetMaxDim: 1024,
       includeSampleCharacter: false,
     });
-    const delta = captureDelta(newStrokes, 512);
+    const delta = captureDelta(newStrokes, 512, full.mapping);
 
-    const isShoes = goalId === "draw_shoes";
-    const goal = isShoes
-      ? "The character needs shoes on its bare feet so it can walk."
-      : "The character needs a fishing rod to catch a fish at the pond.";
-    const acceptedCategories = isShoes
-      ? ["shoe", "boot", "skate", "slipper"]
-      : ["fishing_rod", "net", "spear", "magnet"];
+    const goal = "Open-ended free play: understand whatever the user just drew, erased, or wrote and make the character react appropriately.";
+    const acceptedCategories = ["clothing", "shoe", "hat", "tool", "food", "animal", "person", "symbol", "handwriting", "scene_object"];
 
     const root = rigRuntime.restJoint("root");
-    const worldSummary = isShoes
-      ? `Character stands on the ground line. Root at (${Math.round(root?.x ?? 0)}, ${Math.round(root?.y ?? 0)}). The pond is far to the right.`
-      : `Character stands at the pond edge. Root at (${Math.round(root?.x ?? 0)}, ${Math.round(root?.y ?? 0)}). Pond center at (${Math.round(pond?.x ?? 0)}, ${Math.round(pond?.y ?? 0)}). A fish swims in the pond.`;
+    const worldSummary = `The character root is at (${Math.round(root?.x ?? 0)}, ${Math.round(root?.y ?? 0)}). The white ground line is normally continuous. Ground erased: ${groundPath.erased}. Nearby entities: ${worldEntities.summary() || "none"}.`;
 
     const result = await analyzeDrawing(
       full.dataUrl,
@@ -297,36 +376,143 @@ async function resolveDrawingAttempt(): Promise<void> {
       acceptedCategories,
     );
     const analysis = result.analysis;
-    if (
-      analysis.matchesGoal &&
-      (analysis.mappedAction === "equip_shoes" || analysis.mappedAction === "equip_tool")
-    ) {
+    if (analysis.recognized || analysis.mappedAction === "ground_erased") {
       succeeded = true;
       pendingDetected = analysis;
+      pendingSourceStrokeIds = new Set(newStrokes.map((stroke) => stroke.id));
       lastFullMapping = full.mapping;
-      quest.trigger({
-        type: "drawing_validated",
-        action: analysis.mappedAction,
-        reactionBubble: looksPersian(analysis.reaction.bubble) ? analysis.reaction.bubble : undefined,
-        emotion: analysis.reaction.emotion,
-      });
+      const entityIds = registerWorldObjects(analysis, full.mapping, pendingSourceStrokeIds);
+      equipDetectedObjects(analysis, full.mapping);
+      if (!executeAIAction(analysis.action ?? null, entityIds)) playReactionMotion(analysis.reaction.emotion);
+      showStoryBubble(
+        looksPersian(analysis.reaction.bubble)
+          ? analysis.reaction.bubble
+          : "دیدمش! بگذار ببینم با آن چه کار می‌شود کرد…",
+      );
+      groundChangePending = false;
+      beginAwaitingDrawing("free_draw", true);
+      diagnostics.info("drawing_analysis_succeeded", { goalId, objects: analysis.objects.length, action: analysis.mappedAction });
     } else {
-      quest.trigger({
-        type: "drawing_invalid",
-        message: looksPersian(analysis.reaction.bubble) ? analysis.reaction.bubble : undefined,
-      });
+      showStoryBubble(looksPersian(analysis.reaction.bubble) ? analysis.reaction.bubble : "این یکی را نفهمیدم؛ یک نشانهٔ دیگر به آن اضافه کن.");
+      beginAwaitingDrawing("free_draw", false);
+      diagnostics.info("drawing_analysis_rejected", { goalId, interpretation: analysis.interpretation });
     }
-  } catch {
-    awaitingGoalId = goalId;
+  } catch (error) {
+    diagnostics.error("drawing_analysis_failed", error);
     bubble.show("هوم… این یکی رو نفهمیدم. یه بار دیگه؟", headAnchorScreen());
+    beginAwaitingDrawing("free_draw", false);
     window.setTimeout(() => {
       if (bubble.isVisible()) bubble.hide();
     }, 2400);
   } finally {
     analysisInFlight = false;
+    refreshReviewControls();
     if (!succeeded && appState.get().mode === "awaiting") {
       animController.playById("idle");
     }
+  }
+}
+
+function playReactionMotion(emotion: string): void {
+  const normalized = emotion.toLowerCase();
+  if (/sad|worried|uncomfortable|غم|ناراحت/.test(normalized)) animController.playById("sad");
+  else if (/happy|excited|joy|خوشحال|هیجان/.test(normalized)) animController.playById("happy");
+  else if (/surpris|شگفت|تعجب/.test(normalized)) animController.playById("spawn");
+  else if (/confus|think|curious|فکر|گیج/.test(normalized)) animController.playById("confused");
+  else animController.playById("talk");
+}
+
+function inferredPhysicsShape(object: DrawingAnalysis["objects"][number]): PhysicsShape | null {
+  if (object.physicsShape && object.physicsShape !== "none") return object.physicsShape;
+  const semantic = `${object.type} ${object.affordances.join(" ")}`.toLowerCase();
+  if (/stair|step|پله/.test(semantic)) return "stairs";
+  if (/slope|ramp|شیب/.test(semantic)) return "slope";
+  if (/platform|bridge|surface|پل|سکو/.test(semantic)) return "platform";
+  if (/box|ball|rock|crate|توپ|سنگ|جعبه/.test(semantic)) return "dynamic";
+  if (/wall|obstacle|barrier|دیوار|مانع/.test(semantic)) return "obstacle";
+  return null;
+}
+
+function registerWorldObjects(
+  analysis: DrawingAnalysis,
+  mapping: CaptureMapping,
+  sourceStrokeIds: ReadonlySet<string>,
+): string[] {
+  return analysis.objects.map((object, index) => {
+    const id = `world_${Date.now().toString(36)}_${index}`;
+    const bounds = {
+      x: imageToWorldX(object.boundingBox.x, mapping),
+      y: imageToWorldY(object.boundingBox.y, mapping),
+      width: object.boundingBox.width / mapping.scale,
+      height: object.boundingBox.height / mapping.scale,
+    };
+    const physicsShape = inferredPhysicsShape(object);
+    worldEntities.upsert({
+      id,
+      type: object.type,
+      sourceStrokeIds: [...sourceStrokeIds],
+      bounds,
+      affordances: object.affordances,
+      physicsShape,
+    });
+    if (physicsShape) {
+      phaserWorld?.addEntity({
+        id,
+        shape: physicsShape,
+        ...bounds,
+        angleDegrees: object.orientationDegrees,
+      });
+    }
+    return id;
+  });
+}
+
+function executeAIAction(action: AIActionRequest | null, entityIds: string[]): boolean {
+  if (!action || !rigRuntime) return false;
+  const validation = validateActionRequest(action, entityIds);
+  if (!validation.valid) {
+    diagnostics.info("ai_action_rejected", { action: action.type, reason: validation.reason });
+    return false;
+  }
+  const target = validation.targetId ? worldEntities.get(validation.targetId) : null;
+  switch (action.type) {
+    case "scratch_head":
+      animController.playById("scratch_head");
+      return true;
+    case "move": {
+      const root = rigRuntime.jointWorld("root");
+      const direction = action.direction === "left" ? -1 : action.direction === "right" ? 1 : target && root && target.bounds.x < root.x ? -1 : 1;
+      phaserWorld?.moveCharacter(direction);
+      animController.playById("walk");
+      window.setTimeout(() => {
+        phaserWorld?.moveCharacter(0);
+        animController.playById("idle");
+      }, action.durationMs);
+      return true;
+    }
+    case "jump":
+      phaserWorld?.jump();
+      animController.playById("happy");
+      return true;
+    case "climb": {
+      const root = rigRuntime.jointWorld("root");
+      const direction = target && root && target.bounds.x < root.x ? -1 : 1;
+      phaserWorld?.moveCharacter(direction, 2.7);
+      phaserWorld?.jump(7.5);
+      animController.playById("walk");
+      window.setTimeout(() => phaserWorld?.moveCharacter(0), action.durationMs);
+      return true;
+    }
+    case "equip":
+    case "use":
+    case "interact":
+      animController.playById("happy");
+      return true;
+    case "speak":
+      animController.playById("talk");
+      return true;
+    case "react":
+      return false;
   }
 }
 
@@ -347,37 +533,22 @@ function equipDetectedObjects(analysis: DrawingAnalysis, mapping: CaptureMapping
         height: object.boundingBox.height / mapping.scale,
       },
     };
-    const attachment = buildAttachmentFromObject(objectWithWorld, store, idMap, rigRuntime!, index);
+    const attachment = buildAttachmentFromObject(objectWithWorld, store, idMap, rigRuntime!, index, pendingSourceStrokeIds);
     if (attachment) added.push(attachment);
   });
   if (added.length > 0) {
     attachments.push(...added);
     pendingDetected = null;
+    pendingSourceStrokeIds.clear();
   }
 }
 
 let lastFullMapping: CaptureMapping | null = null;
-
-function attachHardcodedShoes(): void {
-  if (!rigRuntime) return;
-  const leftFoot = rigRuntime.restJoint("left_foot");
-  const rightFoot = rigRuntime.restJoint("right_foot");
-  if (leftFoot) attachments.push(buildShoeAttachment(leftFoot, "left_foot", "left"));
-  if (rightFoot) attachments.push(buildShoeAttachment(rightFoot, "right_foot", "right"));
-}
-
-function attachHardcodedRod(): void {
-  if (!rigRuntime) return;
-  const hand = rigRuntime.restJoint("right_hand");
-  if (hand) {
-    attachments = attachments.filter((a) => a.id !== "rod");
-    attachments.push(buildRodAttachment(hand));
-  }
-}
+let activeManifest: CharacterManifest | null = null;
 
 function startWalk(): void {
   if (!walker || !rigRuntime) return;
-  const root = rigRuntime.restJoint("root");
+  const root = rigRuntime.jointWorld("root");
   if (root) {
     walker.distance = groundPath.nearestDistance({ x: root.x, y: root.y });
   }
@@ -424,8 +595,6 @@ quest.onCommand = (command: StoryCommand) => {
     case "attach_shoes":
       if (pendingDetected && lastFullMapping) {
         equipDetectedObjects(pendingDetected, lastFullMapping);
-      } else {
-        attachHardcodedShoes();
       }
       break;
     case "start_walk":
@@ -440,10 +609,7 @@ quest.onCommand = (command: StoryCommand) => {
       break;
     case "attach_rod":
       if (pendingDetected && lastFullMapping) {
-        attachments = attachments.filter((a) => a.id.startsWith("detected_") === false);
         equipDetectedObjects(pendingDetected, lastFullMapping);
-      } else {
-        attachHardcodedRod();
       }
       break;
     case "cast_sequence":
@@ -490,19 +656,21 @@ resetEl.style.cssText = [
   "z-index:45",
   "top:max(14px, env(safe-area-inset-top))",
   "left:max(14px, env(safe-area-inset-left))",
-  "width:36px",
-  "height:36px",
-  "border-radius:999px",
-  "border:1px solid rgba(247,245,238,0.25)",
-  "background:rgba(16,59,70,0.6)",
+  "width:72px",
+  "height:68px",
+  "border-radius:16px",
+  "border:2px solid rgba(247,245,238,0.75)",
+  "background:#103B46",
   "color:#F7F5EE",
-  "font-size:17px",
-  "display:grid",
-  "place-items:center",
-  "opacity:0.5",
+  "display:flex",
+  "flex-direction:column",
+  "align-items:center",
+  "justify-content:center",
+  "gap:3px",
+  "opacity:0.92",
   "transition:opacity 200ms",
 ].join(";");
-resetEl.textContent = "↺";
+resetEl.innerHTML = `${controlIcon("restart")}<span style="font:11px system-ui">شروع دوباره</span>`;
 resetEl.title = "شروع دوباره";
 resetEl.addEventListener("click", () => {
   if (storage) void storage.clearSession();
@@ -510,9 +678,47 @@ resetEl.addEventListener("click", () => {
 });
 appEl.appendChild(resetEl);
 
+function controlIcon(kind: "restart" | "undo" | "eraser"): string {
+  const paths = {
+    restart: '<path d="M20 7a8 8 0 1 0 2 8"/><path d="M20 3v4h-4"/>',
+    undo: '<path d="M9 8 4 12l5 4"/><path d="M5 12h9a6 6 0 0 1 6 6"/>',
+    eraser: '<path d="m7 18-3-3 9-9a2 2 0 0 1 3 0l2 2a2 2 0 0 1 0 3l-7 7Z"/><path d="M10 9l5 5M7 18h13"/>',
+  };
+  return `<svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind]}</svg>`;
+}
+
+function makeInkControl(kind: "undo" | "eraser", label: string, title: string, top: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.innerHTML = `${controlIcon(kind)}<span style="font:11px system-ui">${label}</span>`;
+  button.title = title;
+  button.style.cssText = [
+    "position:absolute", "z-index:45", `top:${top}`, "left:max(14px, env(safe-area-inset-left))",
+    "width:72px", "height:68px", "padding:5px", "border-radius:16px",
+    "border:2px solid rgba(247,245,238,0.75)", "background:#103B46",
+    "color:#F7F5EE", "display:flex", "flex-direction:column", "align-items:center",
+    "justify-content:center", "gap:3px", "touch-action:manipulation",
+  ].join(";");
+  appEl.appendChild(button);
+  return button;
+}
+
+const undoEl = makeInkControl("undo", "برگشت", "پاک کردن آخرین خط", "90px");
+const eraserEl = makeInkControl("eraser", "پاک‌کن", "پاک‌کن: بخش لمس‌شدهٔ خط را پاک کن", "166px");
+let activeInkTool: "pen" | "eraser" = "pen";
+
+function canEditInk(): boolean {
+  const mode = appState.get().mode;
+  return mode === "intro" || mode === "awaiting";
+}
+
 function hideRevive(): void {
   reviveEl.style.opacity = "0";
   reviveEl.style.pointerEvents = "none";
+}
+
+function hideReview(): void {
+  reviewEl.style.opacity = "0";
+  reviewEl.style.pointerEvents = "none";
 }
 
 function hideSampleDemo(): void {
@@ -545,7 +751,7 @@ hintEl.style.cssText = [
   "transition:opacity 400ms",
   "pointer-events:none",
 ].join(";");
-hintEl.textContent = "یک شخصیت روی خط بکش؛ یک سر، دو دست و دو پا…";
+hintEl.textContent = "شخصیتت را داخل کادر و روی خط بکش؛ سر، دو دست و دو پا…";
 appEl.appendChild(hintEl);
 let hintVisible = false;
 
@@ -580,9 +786,10 @@ stageButton.style.cssText = [
   "color:#103B46",
   "background:#F7F5EE",
   "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
-  "font-size:16px",
+  "font-size:18.4px",
   "font-weight:600",
-  "padding:10px 30px",
+  "padding:12px 35px",
+  "min-height:56px",
   "border-radius:999px",
   "border:none",
   "direction:rtl",
@@ -603,8 +810,9 @@ reviveEl.style.cssText = [
   "color:#F7F5EE",
   "background:rgba(16,59,70,0.9)",
   "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
-  "font-size:16px",
-  "padding:10px 26px",
+  "font-size:18.4px",
+  "padding:12px 30px",
+  "min-height:56px",
   "border-radius:999px",
   "border:1px solid rgba(247,245,238,0.4)",
   "direction:rtl",
@@ -614,6 +822,76 @@ reviveEl.style.cssText = [
 ].join(";");
 reviveEl.textContent = "زنده‌اش کن";
 appEl.appendChild(reviveEl);
+
+const reviewEl = document.createElement("button");
+reviewEl.style.cssText = [
+  "position:absolute",
+  "z-index:35",
+  "bottom:max(28px, env(safe-area-inset-bottom))",
+  "left:50%",
+  "transform:translateX(-50%)",
+  "color:#103B46",
+  "background:#D8F6FF",
+  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
+  "font-size:18.4px",
+  "font-weight:700",
+  "padding:12px 35px",
+  "min-height:56px",
+  "border-radius:999px",
+  "border:2px solid rgba(247,245,238,0.72)",
+  "direction:rtl",
+  "opacity:0",
+  "transition:opacity 220ms, transform 160ms",
+  "pointer-events:none",
+  "touch-action:manipulation",
+  "box-shadow:0 6px 20px rgba(0,0,0,0.3)",
+].join(";");
+reviewEl.textContent = "▶ ببین نقاشی‌مو";
+reviewEl.title = "حالا نقاشی من را ببین";
+appEl.appendChild(reviewEl);
+
+const repairEl = document.createElement("button");
+repairEl.style.cssText = [
+  "position:absolute", "z-index:35", "top:max(18px, env(safe-area-inset-top))",
+  "right:max(18px, env(safe-area-inset-right))", "padding:10px 16px", "min-height:48px",
+  "border-radius:999px", "border:1px solid rgba(216,246,255,.45)", "background:#103B46",
+  "color:#D8F6FF", "font:15px system-ui", "direction:rtl", "opacity:0", "pointer-events:none",
+  "touch-action:manipulation", "transition:opacity 220ms",
+].join(";");
+repairEl.textContent = "اصلاح بخش‌های بدن";
+appEl.appendChild(repairEl);
+
+const repairPaletteEl = document.createElement("div");
+repairPaletteEl.style.cssText = [
+  "position:absolute", "z-index:50", "top:max(14px, env(safe-area-inset-top))", "left:50%",
+  "transform:translateX(-50%)", "display:none", "gap:6px", "align-items:center", "flex-wrap:wrap",
+  "justify-content:center", "max-width:calc(100vw - 180px)", "padding:8px", "border-radius:18px",
+  "background:rgba(5,24,30,.9)", "direction:rtl",
+].join(";");
+const repairLabels: Record<RepairPart, string> = {
+  head: "سر", torso: "بدن", left_arm: "دست چپ", right_arm: "دست راست",
+  left_leg: "پای چپ", right_leg: "پای راست",
+};
+const repairPartButtons = new Map<RepairPart, HTMLButtonElement>();
+for (const part of REPAIR_PARTS) {
+  const button = document.createElement("button");
+  button.textContent = repairLabels[part];
+  button.style.cssText = "min-height:44px;padding:8px 12px;border-radius:12px;border:1px solid #D8F6FF;background:#103B46;color:#F7F5EE;font:14px system-ui;touch-action:manipulation";
+  button.addEventListener("click", () => {
+    segmentRepair?.setPart(part);
+    repairPartButtons.forEach((item, key) => {
+      item.style.background = key === part ? "#D8F6FF" : "#103B46";
+      item.style.color = key === part ? "#103B46" : "#F7F5EE";
+    });
+  });
+  repairPartButtons.set(part, button);
+  repairPaletteEl.appendChild(button);
+}
+const repairDoneEl = document.createElement("button");
+repairDoneEl.textContent = "تمام شد";
+repairDoneEl.style.cssText = "min-height:44px;padding:8px 16px;border-radius:12px;border:0;background:#F7F5EE;color:#103B46;font:700 14px system-ui;touch-action:manipulation";
+repairPaletteEl.appendChild(repairDoneEl);
+appEl.appendChild(repairPaletteEl);
 
 const sampleDemoEl = document.createElement("button");
 sampleDemoEl.style.cssText = [
@@ -630,15 +908,21 @@ sampleDemoEl.style.cssText = [
   "border-radius:999px",
   "border:1px solid rgba(247,245,238,0.2)",
   "direction:rtl",
+  "opacity:0",
+  "pointer-events:none",
   "transition:opacity 300ms",
 ].join(";");
 sampleDemoEl.textContent = "تحلیل شخصیت نمونه";
 appEl.appendChild(sampleDemoEl);
+if (import.meta.env.DEV) {
+  sampleDemoEl.style.opacity = "1";
+  sampleDemoEl.style.pointerEvents = "auto";
+}
 
 const STAGE_LABELS: Record<string, string> = {
-  box: "۱) محدودهٔ شخصیت را تنظیم کن",
-  strokes: "۲) خط‌های شخصیت را انتخاب کن (ضربه روی خط)",
-  joints: "۳) مفصل‌ها را جابه‌جا کن",
+  box: "محدودهٔ شخصیت را تنظیم کن؛ یا مستقیم ادامه بده",
+  strokes: "خط‌های شخصیت را انتخاب کن",
+  joints: "فقط مفصل‌های اشتباه را با قلم جابه‌جا کن",
   done: "آماده‌ای؟",
 };
 
@@ -648,10 +932,11 @@ function enterEditorMode(box: { x: number; y: number; width: number; height: num
   if (!mapping || !spike.analysis) return;
   const filter = includeSample ? (s: { entityId: string | null }) => s.entityId === "sample_character" : undefined;
   const manifest = buildManifest(spike.analysis, mapping, store, idMap, filter);
-  editor.begin(box, manifest, filter);
+  editor.begin(includeSample ? box : characterGuideBox(), manifest, filter);
+  editor.nextStage();
   hideRevive();
   hideSampleDemo();
-  stageButton.textContent = "بعدی";
+  stageButton.textContent = "ادامه";
   stageButton.style.opacity = "1";
   stageButton.style.pointerEvents = "auto";
 }
@@ -679,38 +964,70 @@ function finalizeCharacter(): void {
 }
 
 reviveEl.addEventListener("click", () => startAnalysis(false));
-sampleDemoEl.addEventListener("click", () => startAnalysis(true));
+sampleDemoEl.addEventListener("click", () => {
+  loadSampleDemo();
+  startAnalysis(true);
+});
 stageButton.addEventListener("click", () => {
   editor.nextStage();
 });
 
 editor.onStageChange = (stage) => {
   stageTitleEl.textContent = STAGE_LABELS[stage];
-  stageButton.textContent = stage === "joints" ? "زنده‌اش کن" : "بعدی";
+  stageButton.textContent = stage === "joints" ? "زنده‌اش کن" : "ادامه";
   if (stage === "done") {
     hideStageButton();
     finalizeCharacter();
   }
 };
 
-function scheduleIdleAction(): void {
-  if (idleTimer !== null) window.clearTimeout(idleTimer);
-  idleTimer = window.setTimeout(() => {
-    idleTimer = null;
-    const mode = appState.get().mode;
-    if (mode === "awaiting") {
-      resolveDrawingAttempt();
-      return;
-    }
-    if (mode !== "intro") return;
-    if (spike.status === "analyzing") return;
-    if (spike.userHasDrawn() && spike.status !== "done") {
-      reviveEl.style.opacity = "1";
-      reviveEl.style.pointerEvents = "auto";
-      return;
-    }
-  }, INACTIVITY_MS);
+function hasPendingReview(): boolean {
+  return hasReviewableChanges(store.all(), checkpoint, groundChangePending);
 }
+
+function refreshReviewControls(): void {
+  hideRevive();
+  hideReview();
+  const mode = appState.get().mode;
+  const canRepair = mode === "awaiting" && activeManifest !== null && !analysisInFlight;
+  repairEl.style.opacity = canRepair ? "1" : "0";
+  repairEl.style.pointerEvents = canRepair ? "auto" : "none";
+  if (mode === "intro" && spike.status !== "analyzing" && spike.status !== "done" && spike.userHasDrawn()) {
+    reviveEl.style.opacity = "1";
+    reviveEl.style.pointerEvents = "auto";
+  } else if (mode === "awaiting" && !analysisInFlight && hasPendingReview()) {
+    reviewEl.style.opacity = "1";
+    reviewEl.style.pointerEvents = "auto";
+  }
+}
+
+reviewEl.addEventListener("click", () => {
+  if (analysisInFlight || appState.get().mode !== "awaiting" || !hasPendingReview()) return;
+  hideReview();
+  void resolveDrawingAttempt();
+});
+
+repairEl.addEventListener("click", () => {
+  if (!activeManifest || analysisInFlight) return;
+  segmentRepair = new SegmentRepairEditor(structuredClone(activeManifest));
+  appState.setMode("segmenting");
+  hideReview();
+  repairEl.style.opacity = "0";
+  repairEl.style.pointerEvents = "none";
+  repairPaletteEl.style.display = "flex";
+  repairPartButtons.get("torso")?.click();
+});
+
+repairDoneEl.addEventListener("click", () => {
+  if (!segmentRepair) return;
+  activeManifest = segmentRepair.manifest;
+  activateRig(buildRig(activeManifest, store), false);
+  if (storage) void storage.saveManifest(activeManifest);
+  segmentRepair = null;
+  repairPaletteEl.style.display = "none";
+  appState.setMode("awaiting");
+  refreshReviewControls();
+});
 
 const pointer = new PointerInput(canvas, store, camera, {
   onStrokeStart: () => {
@@ -718,6 +1035,7 @@ const pointer = new PointerInput(canvas, store, camera, {
     hintEl.style.opacity = "0";
     hintVisible = false;
     hideRevive();
+    hideReview();
     hideSampleDemo();
     if (bubble.isVisible()) {
       bubble.hide();
@@ -727,11 +1045,10 @@ const pointer = new PointerInput(canvas, store, camera, {
         quest.trigger({ type: "bubble_shown" });
       }
     }
-    if (idleTimer !== null) window.clearTimeout(idleTimer);
   },
   onStrokeEnd: () => {
     pencilDown = false;
-    scheduleIdleAction();
+    refreshReviewControls();
     scheduleSave();
   },
   onPencilMove: (e) => {
@@ -743,55 +1060,118 @@ const pointer = new PointerInput(canvas, store, camera, {
   onPencilDown: (e) => {
     lastPencil = e;
   },
+  onErase: (affectedStrokes) => {
+    diagnostics.info("strokes_erased", { affectedStrokes });
+    hideRevive();
+    scheduleSave();
+    refreshReviewControls();
+  },
+  onEraserMove: (point) => {
+    if (!rigRuntime || !groundPath.eraseNear(point, 26)) return;
+    groundChangePending = true;
+    diagnostics.info("ground_erased", { x: Math.round(point.x) });
+    scheduleSave();
+    refreshReviewControls();
+  },
+});
+
+function setInkTool(tool: "pen" | "eraser"): void {
+  activeInkTool = tool;
+  pointer.setTool(tool);
+  eraserEl.style.background = tool === "eraser" ? "#F7F5EE" : "rgba(16,59,70,0.82)";
+  eraserEl.style.color = tool === "eraser" ? "#103B46" : "#F7F5EE";
+  diagnostics.info("ink_tool_changed", { tool });
+}
+
+undoEl.addEventListener("click", () => {
+  if (!canEditInk()) return;
+  const undone = store.undo();
+  if (!undone) return;
+  diagnostics.info("stroke_undone", { id: undone.id });
+  hideRevive();
+  scheduleSave();
+  refreshReviewControls();
+});
+eraserEl.addEventListener("click", () => {
+  if (!canEditInk()) return;
+  setInkTool(activeInkTool === "eraser" ? "pen" : "eraser");
 });
 
 pointer.interceptor = {
   down: (world) => {
+    if (appState.get().mode === "segmenting" && segmentRepair) {
+      segmentRepair.pointerDown(world);
+      return true;
+    }
     if (appState.get().mode !== "setup") return false;
     editor.pointerDown(world);
-    return editor.isDragging() || editor.stage === "strokes";
+    return true;
   },
   move: (world) => {
+    if (appState.get().mode === "segmenting" && segmentRepair) {
+      segmentRepair.pointerMove(world);
+      return true;
+    }
     if (appState.get().mode !== "setup") return false;
     editor.pointerMove(world);
-    return editor.isDragging();
+    return true;
   },
   up: (world) => {
+    if (appState.get().mode === "segmenting" && segmentRepair) {
+      segmentRepair.pointerMove(world);
+      segmentRepair.pointerUp();
+      return;
+    }
+    if (appState.get().mode !== "setup") return;
     editor.pointerUp();
   },
 };
 
-function renderFrame(now: number): void {
+function renderFrame(now: number, resolution = window.devicePixelRatio || 1): void {
   const { viewportWidth: w, viewportHeight: h } = appState.get();
   const dt = Math.min(64, now - lastFrame);
   lastFrame = now;
 
+  ctx.setTransform(resolution, 0, 0, resolution, 0, 0);
+
   ctx.fillStyle = PALETTE.background;
   ctx.fillRect(0, 0, w, h);
 
-  const poly = groundPath.screenPolyline(camera.state.x);
   ctx.strokeStyle = PALETTE.primaryInk;
   ctx.lineWidth = BASE_LINE_WIDTH + 1;
   ctx.lineCap = "round";
-  ctx.beginPath();
-  poly.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
-  ctx.stroke();
+  for (const poly of groundPath.screenPolylines(camera.state.x)) {
+    ctx.beginPath();
+    poly.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+    ctx.stroke();
+  }
+
+  if (appState.get().mode === "intro" && !rigRuntime) {
+    const guide = characterGuideBox();
+    ctx.save();
+    ctx.translate(-camera.state.x, -camera.state.y);
+    ctx.strokeStyle = "rgba(216,246,255,0.42)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([10, 9]);
+    ctx.strokeRect(guide.x, guide.y, guide.width, guide.height);
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
 
   pond?.draw(ctx, camera, now);
 
   for (const stroke of store.all()) {
-    if (stroke.active && !riggedStrokeIds.has(stroke.id)) {
+    if (stroke.active && stroke.entityId === null && !riggedStrokeIds.has(stroke.id)) {
       renderer.drawStroke(ctx, stroke, camera);
     }
   }
 
   if (rigRuntime) {
-    let rootDeltaX = 0;
     if (walking && walker) {
       walker.step(dt);
       const pos = walker.position();
-      const root = rigRuntime.restJoint("root");
-      if (root) rootDeltaX = pos.x - root.x;
+      rigRuntime.moveEntityTo(pos.x, rigRuntime.entityTransform.y);
+      phaserWorld?.placeCharacter(rigRuntime);
       if (walker.finished) {
         walking = false;
         quest.trigger({ type: "walk_complete" });
@@ -799,47 +1179,48 @@ function renderFrame(now: number): void {
       }
       const targetCameraX = pos.x - w * 0.33;
       camera.setX(easeToward(camera.state.x, targetCameraX, dt));
+      phaserWorld?.setCameraX(camera.state.x);
+    } else {
+      phaserWorld?.syncCharacter(rigRuntime);
     }
 
     const pose = animController.update(now);
     rigRuntime.applyPose({
       jointRotations: pose.jointRotations,
-      rootDeltaX,
+      rootDeltaX: 0,
       rootDeltaY: pose.rootDeltaY,
       rootRotation: pose.rootRotation,
     });
 
-    const strokes = rigRuntime.transformedStrokePoints();
+    const strokes = rigRuntime.transformedStrokeSegments();
     ctx.save();
     ctx.translate(-camera.state.x, -camera.state.y);
     rigRuntime.strokes.forEach((rigStroke, i) => {
-      const points = strokes[i];
-      if (!points || points.length < 2) return;
-      ctx.strokeStyle = rigStroke.color;
-      ctx.lineWidth = rigStroke.baseWidth;
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.beginPath();
-      points.forEach((p, j) => (j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-      ctx.stroke();
+      const segments = strokes[i];
+      if (!segments) return;
+      segments.forEach((points) => renderer.drawRigStroke(ctx, rigStroke, points));
     });
 
     for (const attachment of attachments) {
-      const points = attachmentWorldPoints(attachment, rigRuntime);
-      if (points.length < 2) continue;
-      ctx.strokeStyle = attachment.color;
-      ctx.lineWidth = attachment.baseWidth;
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.beginPath();
-      points.forEach((p, j) => (j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-      ctx.stroke();
+      if (!attachment.visible) continue;
+      const pointGroups = attachmentWorldPoints(attachment, rigRuntime);
+      pointGroups.forEach((points, index) => {
+        if (points.length < 2) return;
+        const stroke = attachment.strokes[index];
+        ctx.strokeStyle = stroke.color;
+        ctx.lineWidth = stroke.baseWidth;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        points.forEach((point, pointIndex) => (pointIndex === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)));
+        ctx.stroke();
+      });
     }
 
     if (pond?.fish.caught) {
       const line = attachments.find((a) => a.id === "fish_line");
       if (line) {
-        const points = attachmentWorldPoints(line, rigRuntime);
+        const points = attachmentWorldPoints(line, rigRuntime).at(0) ?? [];
         const end = points[points.length - 1];
         if (end) pond.drawCaughtFish(ctx, { x: end.x, y: end.y + 8 });
       }
@@ -851,6 +1232,12 @@ function renderFrame(now: number): void {
     editor.draw(ctx, camera);
     stageTitleEl.style.opacity = "1";
   }
+  if (appState.get().mode === "segmenting" && segmentRepair) segmentRepair.draw(ctx, camera);
+
+  if (bubble.isVisible()) bubble.updateAnchor(headAnchorScreen());
+
+  const liveStroke = pointer.liveStroke;
+  if (liveStroke) renderer.drawLiveStroke(ctx, liveStroke, camera);
 
   if (pencilDown && lastPencil) {
     const sp = camera.worldToScreen(lastPencil);
@@ -864,17 +1251,13 @@ function renderFrame(now: number): void {
     ctx.fill();
   }
 
-  requestAnimationFrame(renderFrame);
-}
-
-function attachmentWorldPoints(attachment: Attachment, runtime: RigRuntime): Array<{ x: number; y: number }> {
-  return attachment.localPoints.map((p) => runtime.boneToWorld(attachment.boneId, p));
 }
 
 appState.subscribe((state) => {
+  if (state.mode !== "intro" && state.mode !== "awaiting") setInkTool("pen");
   if (state.mode === "intro" && state.viewportWidth > 0) {
     window.setTimeout(() => {
-      if (!hintVisible && store.count() === 0) {
+      if (!hintVisible && store.active().filter((stroke) => stroke.entityId === null).length === 0) {
         hintVisible = true;
         hintEl.style.opacity = "1";
       }
@@ -889,7 +1272,19 @@ appState.subscribe((state) => {
 window.addEventListener("resize", resize);
 resize();
 appState.setMode("intro");
-requestAnimationFrame(renderFrame);
+phaserWorld = new PhaserWorldController(
+  canvas,
+  {
+    render: (now, _context, resolution) => renderFrame(now, resolution),
+    ready: () => {
+      const { viewportWidth: width, viewportHeight: height } = appState.get();
+      phaserWorld?.configureGround(width, Math.round(height * BASE_LINE_Y_RATIO));
+      if (rigRuntime) phaserWorld?.attachCharacter(rigRuntime);
+    },
+  },
+  window.innerWidth,
+  window.innerHeight,
+);
 
 void restoreSession().then(() => {
   if (typeof navigator !== "undefined" && "serviceWorker" in navigator && import.meta.env.PROD) {

@@ -95,9 +95,7 @@ export class JointEditor {
 
   nextStage(): void {
     if (this.stage === "box") {
-      this.stage = "strokes";
       this.applyInclusionFromBox();
-    } else if (this.stage === "strokes") {
       this.stage = "joints";
     } else if (this.stage === "joints") {
       this.stage = "done";
@@ -143,11 +141,13 @@ export class JointEditor {
       const hit = hitTestBox(p, this.box);
       this.drag = { ...hit, startX: p.x, startY: p.y, origin: { ...this.box } };
     } else if (this.stage === "strokes") {
+      const strokeId = this.nearestStroke(p);
+      if (strokeId) {
+        this.toggleStroke(strokeId);
+        return;
+      }
       const hit = hitTestBox(p, this.box);
-      if (hit.mode === "toggle") {
-        const strokeId = this.nearestStroke(p);
-        if (strokeId) this.toggleStroke(strokeId);
-      } else {
+      if (hit.mode !== "move" && hit.mode !== "toggle") {
         this.drag = { ...hit, startX: p.x, startY: p.y, origin: { ...this.box } };
       }
     } else if (this.stage === "joints" && this.manifest) {
@@ -292,6 +292,10 @@ export class JointEditor {
         ctx.strokeStyle = "rgba(16,59,70,0.9)";
         ctx.lineWidth = 2;
         ctx.stroke();
+        ctx.fillStyle = PALETTE.primaryInk;
+        ctx.font = "11px system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText(joint.id, joint.x, joint.y - 12);
       }
     }
 

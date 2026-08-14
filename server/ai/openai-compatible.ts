@@ -18,21 +18,34 @@ export class OpenAICompatibleProvider implements AIProvider {
   readonly model: string;
   readonly jsonModes: JsonMode[];
   private client: OpenAI;
+  private readonly thinkingLevel: "low" | "medium" | "high" | null;
 
   constructor(config: ServerConfig) {
     this.model = config.AI_MODEL;
-    this.jsonModes = config.AI_JSON_MODE === "text" ? ["text"] : ["json_schema", "json_object", "text"];
+    this.jsonModes = config.AI_JSON_MODE === "json_schema"
+      ? ["json_schema", "json_object", "text"]
+      : config.AI_JSON_MODE === "json_object"
+        ? ["json_object", "text"]
+        : ["text"];
     this.client = new OpenAI({
       baseURL: config.AI_BASE_URL,
       apiKey: config.AI_API_KEY,
       timeout: config.AI_TIMEOUT_MS,
       maxRetries: 0,
     });
+    this.thinkingLevel = /^(gpt-5|o[1-9])/i.test(config.AI_MODEL) ? config.AI_THINKING_LEVEL : null;
   }
 
   async complete(request: ProviderRequest): Promise<ProviderResult> {
     let lastError: unknown = null;
     for (const mode of this.jsonModes) {
+      const startedAt = Date.now();
+      console.info("[pencil-ai] provider_request_started", {
+        model: this.model,
+        mode,
+        timeoutMs: this.client.timeout,
+        imageCount: request.messages.reduce((count, message) => count + message.content.filter((part) => part.type === "image_url").length, 0),
+      });
       try {
         const responseFormat = this.buildResponseFormat(mode, request);
         const completion = await this.client.chat.completions.create({
@@ -47,15 +60,28 @@ export class OpenAICompatibleProvider implements AIProvider {
           })) as ChatCompletionMessageParam[],
           response_format: responseFormat,
           ...(mode === "json_schema" ? { temperature: 0.2 } : {}),
+          ...(this.thinkingLevel ? { reasoning_effort: this.thinkingLevel } : {}),
         });
         const text = completion.choices[0]?.message?.content ?? "";
         if (!text.trim()) {
           throw new Error("empty completion from provider");
         }
+        console.info("[pencil-ai] provider_request_succeeded", {
+          model: completion.model,
+          mode,
+          elapsedMs: Date.now() - startedAt,
+        });
         return { text, rawModel: completion.model };
       } catch (error) {
         lastError = error;
         const status = (error as OpenAiLikeError).status;
+        console.error("[pencil-ai] provider_request_failed", {
+          model: this.model,
+          mode,
+          elapsedMs: Date.now() - startedAt,
+          status: status ?? null,
+          message: describeError(error),
+        });
         if (status === 400 || status === 422 || status === 404) {
           continue;
         }

@@ -1,8 +1,8 @@
 import type { JointId } from "../app/constants.js";
-import { PALETTE } from "../app/constants.js";
 import type { RigRuntime } from "./rig-runtime.js";
 import type { StrokeStore } from "../drawing/stroke-store.js";
 import type { IdMap } from "../drawing/id-map.js";
+import { IDENTITY_ENTITY_TRANSFORM, transformLocalPoint, type EntityTransform } from "./entity-transform.js";
 
 export type AttachmentKind = "wearable" | "held_tool";
 
@@ -10,10 +10,18 @@ export interface Attachment {
   id: string;
   kind: AttachmentKind;
   boneId: JointId;
+  sourceStrokeIds: string[];
+  strokes: AttachmentStroke[];
+  localTransform: EntityTransform;
+  visible: boolean;
+  drawOrder: number;
+}
+
+export interface AttachmentStroke {
+  sourceStrokeId: string;
   localPoints: Array<{ x: number; y: number }>;
   color: string;
   baseWidth: number;
-  drawOrder: number;
 }
 
 export function toLocalPoints(
@@ -26,8 +34,10 @@ export function toLocalPoints(
 export function attachmentWorldPoints(
   attachment: Attachment,
   runtime: RigRuntime,
-): Array<{ x: number; y: number }> {
-  return attachment.localPoints.map((p) => runtime.boneToWorld(attachment.boneId, p));
+): Array<Array<{ x: number; y: number }>> {
+  return attachment.strokes.map((stroke) =>
+    stroke.localPoints.map((point) => runtime.boneToWorld(attachment.boneId, transformLocalPoint(point, attachment.localTransform))),
+  );
 }
 
 export interface DetectedObject {
@@ -46,6 +56,7 @@ export function buildAttachmentFromObject(
   idMap: IdMap,
   runtime: RigRuntime,
   index: number,
+  allowedStrokeIds?: ReadonlySet<string>,
 ): Attachment | null {
   if (!object.attachTo || !object.anchor) return null;
   const boneId = resolveBoneId(object.attachTo, object.anchor, runtime);
@@ -58,30 +69,51 @@ export function buildAttachmentFromObject(
     height: object.boundingBox.height + 60,
   };
   const strokeIds = idMap.sampleStrokesInRegion(store, box, 4);
-  const points: Array<{ x: number; y: number }> = [];
+  const attachmentStrokes: AttachmentStroke[] = [];
   for (const stroke of store.all()) {
-    if (!stroke.active || !strokeIds.has(stroke.id)) continue;
-    for (const p of stroke.points) {
-      if (p.x < box.x || p.x > box.x + box.width || p.y < box.y || p.y > box.y + box.height) continue;
-      points.push({ x: p.x, y: p.y });
-    }
+    if (!stroke.active || !strokeIds.has(stroke.id) || (allowedStrokeIds && !allowedStrokeIds.has(stroke.id))) continue;
+    const points = stroke.points
+      .filter((p) => p.x >= box.x && p.x <= box.x + box.width && p.y >= box.y && p.y <= box.y + box.height)
+      .map((p) => ({ x: p.x, y: p.y }));
+    if (points.length === 0) continue;
+    attachmentStrokes.push({
+      sourceStrokeId: stroke.id,
+      localPoints: toLocalPoints(samplePoints(points), attachmentSourceAnchor(object, boneId)),
+      color: stroke.color,
+      baseWidth: stroke.baseWidth,
+    });
   }
-  if (points.length === 0) return null;
+  if (attachmentStrokes.length === 0) return null;
 
-  let sampled = points;
-  if (points.length > MAX_ATTACHMENT_POINTS) {
-    const step = Math.ceil(points.length / MAX_ATTACHMENT_POINTS);
-    sampled = points.filter((_, i) => i % step === 0);
-  }
+  const id = `attachment_${Date.now().toString(36)}_${index}`;
+  attachmentStrokes.forEach((stroke) => store.setEntityId(stroke.sourceStrokeId, id));
 
   return {
-    id: `detected_${index}`,
+    id,
     kind: object.category === "held_tool" ? "held_tool" : "wearable",
     boneId,
-    localPoints: toLocalPoints(sampled, object.anchor),
-    color: PALETTE.primaryInk,
-    baseWidth: 4,
+    sourceStrokeIds: attachmentStrokes.map((stroke) => stroke.sourceStrokeId),
+    strokes: attachmentStrokes,
+    localTransform: { ...IDENTITY_ENTITY_TRANSFORM },
+    visible: true,
     drawOrder: 7,
+  };
+}
+
+function samplePoints(points: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+  if (points.length <= MAX_ATTACHMENT_POINTS) return points;
+  const step = Math.ceil(points.length / MAX_ATTACHMENT_POINTS);
+  return points.filter((_, index) => index % step === 0);
+}
+
+function attachmentSourceAnchor(
+  object: DetectedObject,
+  boneId: JointId,
+): { x: number; y: number } {
+  if (object.category !== "wearable" || !boneId.endsWith("foot")) return object.anchor!;
+  return {
+    x: object.boundingBox.x + object.boundingBox.width / 2,
+    y: object.boundingBox.y + object.boundingBox.height * 0.35,
   };
 }
 

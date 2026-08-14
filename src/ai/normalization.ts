@@ -11,6 +11,7 @@ export function clampConfidence(value: number): number {
 export interface CaptureMapping {
   scale: number;
   cameraX: number;
+  cameraY?: number;
   width: number;
   height: number;
 }
@@ -20,12 +21,12 @@ export function imageToWorldX(imageX: number, mapping: CaptureMapping): number {
 }
 
 export function imageToWorldY(imageY: number, mapping: CaptureMapping): number {
-  return imageY / mapping.scale;
+  return imageY / mapping.scale + (mapping.cameraY ?? 0);
 }
 
 export function worldToImage(p: { x: number; y: number }, mapping: CaptureMapping): { x: number; y: number } {
   return {
     x: (p.x - mapping.cameraX) * mapping.scale,
-    y: p.y * mapping.scale,
+    y: (p.y - (mapping.cameraY ?? 0)) * mapping.scale,
   };
 }

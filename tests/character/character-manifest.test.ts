@@ -3,6 +3,7 @@ import {
   jointsFromAnalysis,
   verifyManifest,
   ensureValidParents,
+  migrateManifest,
   missingJoints,
   type CharacterManifest,
   type JointManifest,
@@ -43,6 +44,23 @@ describe("jointsFromAnalysis", () => {
     dup.character.joints.push({ ...dup.character.joints[0] });
     const joints = jointsFromAnalysis(dup, mapping);
     expect(joints.filter((j) => j.id === "root").length).toBe(1);
+  });
+});
+
+describe("manifest migration", () => {
+  it("upgrades legacy manifests without discarding joints", () => {
+    const legacy: CharacterManifest = {
+      version: "1.0",
+      joints: [{ id: "root", x: 10, y: 20, parent: null, confidence: 1 }],
+      face: {},
+      parts: [],
+      includedStrokeIds: [],
+      createdAt: 0,
+    };
+    const migrated = migrateManifest(legacy);
+    expect(migrated.version).toBe("2.0");
+    expect(migrated.segmentOverrides).toEqual([]);
+    expect(migrated.joints).toEqual(legacy.joints);
   });
 });
 

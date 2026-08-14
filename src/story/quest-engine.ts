@@ -48,7 +48,7 @@ export const QUESTS: Record<string, QuestDefinition> = {
     id: "draw_shoes",
     requests: [
       { emotion: "uncomfortable", bubble: "این خط برای پای برهنه‌ام خیلی زبره…" },
-      { emotion: "hopeful", bubble: "می‌تونی برام کفش بکشی؟" },
+      { emotion: "hopeful", bubble: "دو تا کفش بکش؛ یکی برای هر پا." },
     ],
     acceptedCategories: ["shoe", "boot", "skate", "slipper"],
     targetBones: ["left_foot", "right_foot"],
@@ -57,8 +57,8 @@ export const QUESTS: Record<string, QuestDefinition> = {
   draw_fishing_tool: {
     id: "draw_fishing_tool",
     requests: [
-      { emotion: "curious", bubble: "ته برکه یه ماهی جر می‌خوره…" },
-      { emotion: "curious", bubble: "یک قلاب می‌خوام!" },
+      { emotion: "curious", bubble: "ته برکه یک ماهی تکان می‌خورد…" },
+      { emotion: "curious", bubble: "یک چوب ماهی‌گیری بکش؛ دسته‌اش نزدیک دست راستم باشد." },
     ],
     acceptedCategories: ["fishing_rod", "net"],
     targetBones: ["right_hand"],
@@ -85,6 +85,13 @@ export class QuestEngine {
   onCommand: (command: StoryCommand) => void = () => void 0;
   private bubbleQueue: string[] = [];
   private bubbleEmotions: string[] = [];
+
+  restore(state: QuestState): void {
+    this.state = state;
+    this.bubbleQueue = [];
+    this.bubbleEmotions = [];
+    this.pendingDone = null;
+  }
 
   trigger(event: QuestEvent): void {
     switch (this.state) {

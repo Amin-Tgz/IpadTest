@@ -40,7 +40,7 @@ export function analyzeCharacter(
 
 export function analyzeDrawing(
   image: string,
-  deltaCrop: string | null,
+  delta: { dataUrl: string; cropInImageA: { x: number; y: number; width: number; height: number } } | null,
   canvas: { width: number; height: number },
   goal: string,
   joints: Array<{ id: string; x: number; y: number }>,
@@ -49,7 +49,8 @@ export function analyzeDrawing(
 ): Promise<DrawingAnalyzeResult> {
   return postJson<DrawingAnalyzeResult>("/api/drawing/analyze", {
     image,
-    deltaCrop,
+    deltaCrop: delta?.dataUrl ?? null,
+    deltaCropInImageA: delta?.cropInImageA ?? null,
     canvas,
     goal,
     joints,

@@ -7,6 +7,7 @@ export interface PathSample extends SamplePoint {
 export class GroundPath {
   private samples: PathSample[] = [];
   private totalLength = 0;
+  private erasedRanges: Array<{ minX: number; maxX: number }> = [];
 
   constructor(points: SamplePoint[], spacing = 8) {
     this.build(points, spacing);
@@ -73,5 +74,44 @@ export class GroundPath {
 
   screenPolyline(cameraX: number): Array<[number, number]> {
     return this.samples.map((s) => [s.x - cameraX, s.y]);
+  }
+
+  screenPolylines(cameraX: number): Array<Array<[number, number]>> {
+    const lines: Array<Array<[number, number]>> = [];
+    let current: Array<[number, number]> = [];
+    for (const sample of this.samples) {
+      const erased = this.erasedRanges.some((range) => sample.x >= range.minX && sample.x <= range.maxX);
+      if (erased) {
+        if (current.length > 1) lines.push(current);
+        current = [];
+      } else {
+        current.push([sample.x - cameraX, sample.y]);
+      }
+    }
+    if (current.length > 1) lines.push(current);
+    return lines;
+  }
+
+  eraseNear(point: SamplePoint, radius = 24): boolean {
+    const nearest = this.pointAtDistance(this.nearestDistance(point)).point;
+    if (Math.hypot(point.x - nearest.x, point.y - nearest.y) > radius) return false;
+    this.erasedRanges.push({ minX: point.x - radius, maxX: point.x + radius });
+    this.mergeErasedRanges();
+    return true;
+  }
+
+  get erased(): boolean {
+    return this.erasedRanges.length > 0;
+  }
+
+  private mergeErasedRanges(): void {
+    const sorted = [...this.erasedRanges].sort((a, b) => a.minX - b.minX);
+    const merged: Array<{ minX: number; maxX: number }> = [];
+    for (const range of sorted) {
+      const last = merged[merged.length - 1];
+      if (last && range.minX <= last.maxX) last.maxX = Math.max(last.maxX, range.maxX);
+      else merged.push({ ...range });
+    }
+    this.erasedRanges = merged;
   }
 }

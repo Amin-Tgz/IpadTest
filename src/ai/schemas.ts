@@ -51,6 +51,16 @@ export interface DrawingObject {
   anchor: Vec2 | null;
   orientationDegrees: number;
   affordances: string[];
+  physicsShape?: "platform" | "stairs" | "slope" | "obstacle" | "dynamic" | "none";
+}
+
+export type AIActionName = "scratch_head" | "speak" | "react" | "equip" | "use" | "move" | "jump" | "climb" | "interact";
+
+export interface AIActionRequest {
+  type: AIActionName;
+  targetObjectIndex: number | null;
+  direction: "left" | "right" | "up" | "down" | null;
+  durationMs: number;
 }
 
 export interface DrawingAnalysis {
@@ -61,6 +71,7 @@ export interface DrawingAnalysis {
   objects: DrawingObject[];
   interpretation: string;
   mappedAction: string | null;
+  action?: AIActionRequest | null;
   reaction: {
     emotion: string;
     bubble: string;

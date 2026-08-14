@@ -16,6 +16,14 @@ export const drawingObjectSchema = z.object({
   anchor: z.object({ x: z.number(), y: z.number() }).nullable(),
   orientationDegrees: z.number().default(0),
   affordances: z.array(z.string().max(30)).default([]),
+  physicsShape: z.enum(["platform", "stairs", "slope", "obstacle", "dynamic", "none"]).default("none"),
+});
+
+export const actionRequestSchema = z.object({
+  type: z.enum(["scratch_head", "speak", "react", "equip", "use", "move", "jump", "climb", "interact"]),
+  targetObjectIndex: z.number().int().min(0).max(7).nullable().default(null),
+  direction: z.enum(["left", "right", "up", "down"]).nullable().default(null),
+  durationMs: z.number().int().min(100).max(5000).default(900),
 });
 
 export const drawingAnalysisSchema = z.object({
@@ -25,7 +33,8 @@ export const drawingAnalysisSchema = z.object({
   confidence: z.number(),
   objects: z.array(drawingObjectSchema).max(8).default([]),
   interpretation: z.string().max(200).default(""),
-  mappedAction: z.enum(["equip_shoes", "equip_tool", "none"]).nullable(),
+  mappedAction: z.enum(["equip_shoes", "equip_tool", "answer_question", "ground_erased", "decorate", "react", "none"]).nullable(),
+  action: actionRequestSchema.nullable().default(null),
   reaction: z.object({
     emotion: z.string().max(30).default("neutral"),
     bubble: z.string().default(""),

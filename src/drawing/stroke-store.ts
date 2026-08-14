@@ -76,10 +76,41 @@ export class StrokeStore {
   }
 
   undo(): Stroke | undefined {
-    const last = this.strokes[this.strokes.length - 1];
+    const last = [...this.strokes].reverse().find((stroke) => stroke.active);
     if (!last) return undefined;
     last.active = false;
     this.onRemove.forEach((fn) => fn(last));
     return last;
+  }
+
+  eraseNear(point: { x: number; y: number }, radius = 16): number {
+    const radiusSquared = radius * radius;
+    let affected = 0;
+    for (const stroke of [...this.strokes]) {
+      if (!stroke.active || stroke.entityId !== null) continue;
+      const keep = stroke.points.map((sample) => {
+        const dx = sample.x - point.x;
+        const dy = sample.y - point.y;
+        return dx * dx + dy * dy > radiusSquared;
+      });
+      if (keep.every(Boolean)) continue;
+      const segments: StrokePoint[][] = [];
+      let segment: StrokePoint[] = [];
+      stroke.points.forEach((sample, index) => {
+        if (keep[index]) segment.push(sample);
+        else if (segment.length > 0) {
+          segments.push(segment);
+          segment = [];
+        }
+      });
+      if (segment.length > 0) segments.push(segment);
+      stroke.active = false;
+      this.onRemove.forEach((fn) => fn(stroke));
+      affected += 1;
+      segments.filter((samples) => samples.length >= 2).forEach((samples) => {
+        this.add({ ...stroke, id: nextId("stroke"), points: samples, active: true });
+      });
+    }
+    return affected;
   }
 }

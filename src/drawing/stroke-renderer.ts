@@ -1,5 +1,6 @@
 import getStroke from "perfect-freehand";
 import type { Stroke } from "./stroke-store.js";
+import type { RigStroke } from "../character/rig-builder.js";
 import { PALETTE, BASE_LINE_WIDTH } from "../app/constants.js";
 import type { Camera } from "../world/camera.js";
 
@@ -74,13 +75,21 @@ export class StrokeRenderer {
     stroke: Stroke,
     camera: Camera,
   ): void {
-    if (stroke.points.length < 2) return;
+    if (stroke.points.length === 0) return;
     ctx.save();
     ctx.translate(-camera.state.x, -camera.state.y);
     ctx.strokeStyle = PALETTE.activeInk;
     ctx.lineWidth = BASE_LINE_WIDTH;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
+    if (stroke.points.length === 1) {
+      ctx.fillStyle = PALETTE.activeInk;
+      ctx.beginPath();
+      ctx.arc(stroke.points[0].x, stroke.points[0].y, BASE_LINE_WIDTH / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
     ctx.beginPath();
     ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
     for (let i = 1; i < stroke.points.length; i++) {
@@ -88,5 +97,24 @@ export class StrokeRenderer {
     }
     ctx.stroke();
     ctx.restore();
+  }
+
+  drawRigStroke(
+    ctx: CanvasRenderingContext2D,
+    stroke: RigStroke,
+    points: Array<{ x: number; y: number }>,
+  ): void {
+    if (points.length < 2) return;
+    const outline = getStroke(
+      points.map((point, index) => [point.x, point.y, stroke.points[index]?.pressure ?? 0.5]),
+      { size: stroke.baseWidth, thinning: 0.35, smoothing: 0.4, streamline: 0.45 },
+    );
+    if (outline.length === 0) return;
+    ctx.fillStyle = stroke.color;
+    ctx.beginPath();
+    ctx.moveTo(outline[0][0], outline[0][1]);
+    for (let index = 1; index < outline.length; index++) ctx.lineTo(outline[index][0], outline[index][1]);
+    ctx.closePath();
+    ctx.fill();
   }
 }
