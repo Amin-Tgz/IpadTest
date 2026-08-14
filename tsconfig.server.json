@@ -9,7 +9,9 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["node"]
+    "types": ["node"],
+    "outDir": "server/dist",
+    "rootDir": "server"
   },
-  "include": ["server/**/*.ts", "tests/**/*.ts"]
+  "include": ["server/**/*.ts"]
 }

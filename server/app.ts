@@ -48,7 +48,7 @@ export function createApp(deps: AppDeps = {}) {
     res.status(500).json({ error: "internal_error" });
   });
 
-  const distDir = path.resolve(__dirname, "../dist");
+  const distDir = path.resolve(process.cwd(), "dist");
   if (fs.existsSync(distDir)) {
     app.use(express.static(distDir));
     app.get("*", (_req, res) => res.sendFile(path.join(distDir, "index.html")));

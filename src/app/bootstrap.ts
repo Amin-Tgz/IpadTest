@@ -153,6 +153,60 @@ function rebuildWorld(): void {
 let groundPath = new GroundPath([{ x: 0, y: 0 }, { x: 1, y: 0 }]);
 let worldBuilt = false;
 
+let saveTimer: number | null = null;
+
+function scheduleSave(): void {
+  if (!storage) return;
+  if (saveTimer !== null) window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => {
+    saveTimer = null;
+    void storage.saveStrokes(
+      store
+        .all()
+        .filter((s) => s.active)
+        .map((s) => s),
+    );
+    void storage.saveQuest({ state: quest.state, walking });
+  }, 1500);
+}
+
+async function restoreSession(): Promise<void> {
+  if (!storage) return;
+  try {
+    const savedStrokes = await storage.loadStrokes<Array<Record<string, unknown>>>();
+    const savedManifest = await storage.loadManifest<CharacterManifest>();
+    const savedQuest = await storage.loadQuest<{ state: string; walking: boolean }>();
+    if (savedStrokes && savedStrokes.length > 0) {
+      for (const raw of savedStrokes) {
+        const points = (raw.points as Array<{ x: number; y: number; pressure: number; time: number }>) ?? [];
+        store.add({
+          id: String(raw.id),
+          points,
+          color: String(raw.color ?? PALETTE.primaryInk),
+          baseWidth: Number(raw.baseWidth ?? 4),
+          tool: raw.tool === "eraser" ? "eraser" : "pen",
+          createdAt: Number(raw.createdAt ?? Date.now()),
+          worldSpace: true,
+          entityId: raw.entityId === null ? null : String(raw.entityId),
+          active: true,
+          groupId: raw.groupId === null ? null : String(raw.groupId),
+        });
+      }
+    }
+    if (savedManifest && savedManifest.joints && savedManifest.joints.length > 0) {
+      const ids = new Set(store.all().map((s) => s.id));
+      if (savedManifest.includedStrokeIds.every((id) => ids.has(id))) {
+        replaceCharacter(savedManifest, true);
+        if (savedQuest?.state === "AWAIT_SHOES" || savedQuest?.state === "AWAIT_TOOL") {
+          beginAwaitingDrawing(savedQuest.state === "AWAIT_SHOES" ? "draw_shoes" : "draw_fishing_tool");
+        }
+      }
+    }
+  } catch (error) {
+    console.warn("[pencil-ai] session restore failed", error);
+  }
+}
+
 function headAnchorScreen(): { x: number; y: number } {
   const { viewportWidth: w, viewportHeight: h } = appState.get();
   const root = rigRuntime?.restJoint("head") ?? { x: w * 0.34, y: h * 0.4 };
@@ -209,6 +263,8 @@ async function resolveDrawingAttempt(): Promise<void> {
   awaitingGoalId = null;
   appState.setMode("analyzing");
   bubble.show("بذار ببینم چی کشیدی…", headAnchorScreen());
+  animController.playById("confused");
+  let succeeded = false;
 
   try {
     const viewport = getViewport();
@@ -245,6 +301,7 @@ async function resolveDrawingAttempt(): Promise<void> {
       analysis.matchesGoal &&
       (analysis.mappedAction === "equip_shoes" || analysis.mappedAction === "equip_tool")
     ) {
+      succeeded = true;
       pendingDetected = analysis;
       lastFullMapping = full.mapping;
       quest.trigger({
@@ -267,6 +324,9 @@ async function resolveDrawingAttempt(): Promise<void> {
     }, 2400);
   } finally {
     analysisInFlight = false;
+    if (!succeeded && appState.get().mode === "awaiting") {
+      animController.playById("idle");
+    }
   }
 }
 
@@ -399,6 +459,7 @@ quest.onCommand = (command: StoryCommand) => {
       showEnding();
       break;
   }
+  scheduleSave();
 };
 
 function showEnding(): void {
@@ -422,6 +483,32 @@ function showEnding(): void {
   el.textContent = "ادامهٔ این خط را تو می‌کشی.";
   appEl.appendChild(el);
 }
+
+const resetEl = document.createElement("button");
+resetEl.style.cssText = [
+  "position:absolute",
+  "z-index:45",
+  "top:max(14px, env(safe-area-inset-top))",
+  "left:max(14px, env(safe-area-inset-left))",
+  "width:36px",
+  "height:36px",
+  "border-radius:999px",
+  "border:1px solid rgba(247,245,238,0.25)",
+  "background:rgba(16,59,70,0.6)",
+  "color:#F7F5EE",
+  "font-size:17px",
+  "display:grid",
+  "place-items:center",
+  "opacity:0.5",
+  "transition:opacity 200ms",
+].join(";");
+resetEl.textContent = "↺";
+resetEl.title = "شروع دوباره";
+resetEl.addEventListener("click", () => {
+  if (storage) void storage.clearSession();
+  window.location.reload();
+});
+appEl.appendChild(resetEl);
 
 function hideRevive(): void {
   reviveEl.style.opacity = "0";
@@ -645,6 +732,7 @@ const pointer = new PointerInput(canvas, store, camera, {
   onStrokeEnd: () => {
     pencilDown = false;
     scheduleIdleAction();
+    scheduleSave();
   },
   onPencilMove: (e) => {
     lastPencil = e;
@@ -803,4 +891,10 @@ resize();
 appState.setMode("intro");
 requestAnimationFrame(renderFrame);
 
-console.log("[pencil-ai] phase 4 bootstrap ready");
+void restoreSession().then(() => {
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator && import.meta.env.PROD) {
+    void navigator.serviceWorker.register("/sw.js").catch(() => void 0);
+  }
+});
+
+console.log("[pencil-ai] phase 7 bootstrap ready");
