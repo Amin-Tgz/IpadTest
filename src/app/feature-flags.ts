@@ -1,4 +1,4 @@
-import { PALETTE } from "./constants";
+import { PALETTE } from "./constants.js";
 
 export const FEATURE_FLAGS = {
   jointEditor: true,
