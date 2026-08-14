@@ -79,4 +79,8 @@ export class PondScene {
     ctx.arc(p.x - 8, p.y - 2, 2.5, 0, Math.PI * 2);
     ctx.fill();
   }
+
+  drawCaughtFish(ctx: CanvasRenderingContext2D, p: { x: number; y: number }): void {
+    this.drawFish(ctx, p);
+  }
 }

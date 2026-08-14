@@ -27,6 +27,7 @@ import { buildAttachmentFromObject } from "../character/attachments.js";
 import { captureViewport, captureDelta } from "../ai/capture.js";
 import { analyzeDrawing } from "../ai/ai-client.js";
 import { imageToWorldX, imageToWorldY, worldToImage, type CaptureMapping } from "../ai/normalization.js";
+import { looksPersian } from "../ai/text.js";
 import type { DrawingAnalysis } from "../ai/schemas.js";
 import { createSessionStorage } from "../storage/indexed-db.js";
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO, INACTIVITY_MS } from "./constants.js";
@@ -249,13 +250,13 @@ async function resolveDrawingAttempt(): Promise<void> {
       quest.trigger({
         type: "drawing_validated",
         action: analysis.mappedAction,
-        reactionBubble: analysis.reaction.bubble,
+        reactionBubble: looksPersian(analysis.reaction.bubble) ? analysis.reaction.bubble : undefined,
         emotion: analysis.reaction.emotion,
       });
     } else {
       quest.trigger({
         type: "drawing_invalid",
-        message: analysis.reaction.bubble || undefined,
+        message: looksPersian(analysis.reaction.bubble) ? analysis.reaction.bubble : undefined,
       });
     }
   } catch {
@@ -331,16 +332,15 @@ function castSequence(): void {
     if (!pond || !rigRuntime) return;
     const hand = rigRuntime.restJoint("right_hand");
     if (hand) {
-      const tip = rigRuntime.boneToWorld("right_hand", { x: 164, y: -12 });
       attachments = attachments.filter((a) => a.id !== "fish_line");
-      attachments.push(buildFishLineAttachment(hand, { x: pond.x, y: pond.y - 20 }));
-      void tip;
+      attachments.push(buildFishLineAttachment(hand, { x: pond.x, y: pond.y - 20 }, 60));
     }
     pond.triggerFishJump(performance.now());
   }, 700);
   animController.onClipEnd = (clipId) => {
     if (clipId === "cast_rod") {
       animController.playById("pull_fish");
+      if (pond) pond.fish.caught = true;
       animController.onClipEnd = (innerId) => {
         if (innerId === "pull_fish") {
           quest.trigger({ type: "fish_sequence_done" });
@@ -746,6 +746,15 @@ function renderFrame(now: number): void {
       ctx.beginPath();
       points.forEach((p, j) => (j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
       ctx.stroke();
+    }
+
+    if (pond?.fish.caught) {
+      const line = attachments.find((a) => a.id === "fish_line");
+      if (line) {
+        const points = attachmentWorldPoints(line, rigRuntime);
+        const end = points[points.length - 1];
+        if (end) pond.drawCaughtFish(ctx, { x: end.x, y: end.y + 8 });
+      }
     }
     ctx.restore();
   }

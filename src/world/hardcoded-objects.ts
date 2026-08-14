@@ -60,11 +60,19 @@ export function buildRodAttachment(anchor: { x: number; y: number }): Attachment
   };
 }
 
-export function buildFishLineAttachment(anchor: { x: number; y: number }, target: { x: number; y: number }): Attachment {
-  const points = [
-    { x: 0, y: 0 },
-    { x: target.x - anchor.x, y: target.y - anchor.y },
-  ];
+export function buildFishLineAttachment(
+  anchor: { x: number; y: number },
+  target: { x: number; y: number },
+  sag = 60,
+): Attachment {
+  const points: Array<{ x: number; y: number }> = [];
+  const steps = 14;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const x = anchor.x + (target.x - anchor.x) * t;
+    const y = anchor.y + (target.y - anchor.y) * t + Math.sin(t * Math.PI) * sag;
+    points.push({ x, y });
+  }
   return {
     id: "fish_line",
     kind: "held_tool",
