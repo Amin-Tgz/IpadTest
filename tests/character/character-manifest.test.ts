@@ -61,7 +61,7 @@ describe("manifest migration", () => {
       createdAt: 0,
     };
     const migrated = migrateManifest(legacy);
-    expect(migrated.version).toBe("2.0");
+    expect(migrated.version).toBe("3.0");
     expect(migrated.segmentOverrides).toEqual([]);
     expect(migrated.joints).toEqual(legacy.joints);
   });
@@ -176,6 +176,8 @@ describe("automatic body segmentation", () => {
     const idMap = { sampleStrokesInPolygon: () => new Set<string>() } as unknown as IdMap;
     const manifest = buildManifest(noRegionAnalysis, { scale: 1, cameraX: 0, width: 200, height: 220 }, store, idMap);
     expect(manifest.parts.find((part) => part.part === "left_arm")?.polygon).toBeDefined();
+    expect(manifest.parts.find((part) => part.part === "left_arm")?.source).toBe("local");
+    expect(manifest.parts.find((part) => part.part === "left_arm")?.confidence).toBeGreaterThan(0.5);
     expect(manifest.parts.find((part) => part.part === "right_arm")?.strokeIds).toContain("right_arm_ink");
     expect(manifest.parts.find((part) => part.part === "torso")?.strokeIds).toContain("torso_ink");
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRig, nearestJoint, type RigJoint } from "../../src/character/rig-builder.js";
+import { buildRig, nearestJoint, pointInfluences, type RigJoint } from "../../src/character/rig-builder.js";
 import { StrokeStore } from "../../src/drawing/stroke-store.js";
 import type { CharacterManifest } from "../../src/character/character-manifest.js";
 
@@ -45,6 +45,20 @@ describe("nearestJoint", () => {
   });
 });
 
+describe("weighted joint ownership", () => {
+  it("blends a sample near a parent-child seam", () => {
+    const joints: RigJoint[] = [
+      { id: "left_hip", restX: 0, restY: 0, parent: "root" },
+      { id: "left_knee", restX: 0, restY: 60, parent: "left_hip" },
+      { id: "left_foot", restX: 0, restY: 120, parent: "left_knee" },
+      { id: "root", restX: 0, restY: -10, parent: null },
+    ];
+    const influences = pointInfluences(0, 32, joints.slice(0, 3), joints);
+    expect(influences).toHaveLength(2);
+    expect(influences.reduce((sum, influence) => sum + influence.weight, 0)).toBeCloseTo(1);
+  });
+});
+
 describe("buildRig", () => {
   it("preserves original stroke samples while assigning stable joints", () => {
     const store = new StrokeStore();
@@ -63,6 +77,7 @@ describe("buildRig", () => {
     expect(jointsSeen.has("left_foot")).toBe(true);
     expect(leg.points[0].jointId).toBe("left_hip");
     expect(leg.points[leg.points.length - 1].jointId).toBe("left_foot");
+    expect(leg.points.every((point) => point.influences.length >= 1)).toBe(true);
   });
 
   it("collects eye points into the face group", () => {

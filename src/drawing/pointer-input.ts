@@ -18,7 +18,7 @@ export interface PointerInputCallbacks {
   onStrokeEnd?: (stroke: Stroke) => void;
   onPencilMove?: (event: PencilEvent) => void;
   onPencilDown?: (event: PencilEvent) => void;
-  onErase?: (affectedStrokes: number) => void;
+  onErase?: (affectedStrokeIds: string[]) => void;
   onEraserMove?: (point: { x: number; y: number }) => void;
 }
 
@@ -177,7 +177,7 @@ export class PointerInput {
 
   private eraseAt(point: { x: number; y: number }): void {
     this.callbacks.onEraserMove?.(point);
-    const affected = this.store.eraseNear(point);
-    if (affected > 0) this.callbacks.onErase?.(affected);
+    const affected = this.store.eraseNearWithIds(point);
+    if (affected.count > 0) this.callbacks.onErase?.(affected.strokeIds);
   }
 }

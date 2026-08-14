@@ -18,3 +18,16 @@ export function stairStepRects(spec: RectSpec): RectSpec[] {
     };
   });
 }
+
+export function stairTopWaypoints(
+  spec: RectSpec,
+  characterHalfHeight: number,
+  direction: -1 | 1,
+): Array<{ x: number; y: number }> {
+  const steps = stairStepRects(spec);
+  const ordered = direction > 0 ? steps : [...steps].reverse();
+  return ordered.map((step) => ({
+    x: step.x,
+    y: step.y - step.height / 2 - characterHalfHeight - 2,
+  }));
+}

@@ -24,6 +24,16 @@ export class WorldEntityRegistry {
     return [...this.entities.values()];
   }
 
+  removeByStrokeIds(strokeIds: ReadonlySet<string>): string[] {
+    const removed: string[] = [];
+    for (const entity of this.entities.values()) {
+      if (!entity.sourceStrokeIds.some((id) => strokeIds.has(id))) continue;
+      this.entities.delete(entity.id);
+      removed.push(entity.id);
+    }
+    return removed;
+  }
+
   summary(): string {
     return this.all().slice(-12).map((entity) =>
       `${entity.id}:${entity.type}[${entity.affordances.join(",")}]`,

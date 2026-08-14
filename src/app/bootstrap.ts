@@ -107,6 +107,8 @@ let bubbleTimer: number | null = null;
 let lastFrame = performance.now();
 let segmentRepair: SegmentRepairEditor | null = null;
 let physicsNavigationWasActive = false;
+let navigationTravel = 0;
+let navigationLastX: number | null = null;
 
 function activateRig(rig: Rig, playSpawn = true): void {
   rigRuntime = new RigRuntime(rig);
@@ -507,6 +509,10 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
   switch (action.type) {
     case "scratch_head":
       animController.playById("scratch_head");
+      {
+        const head = rigRuntime.jointWorld("head");
+        if (head) rigRuntime.aimLimb("right_shoulder", "right_elbow", "right_hand", head, -1);
+      }
       return true;
     case "move": {
       const root = rigRuntime.jointWorld("root");
@@ -515,13 +521,21 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
       const targetX = target
         ? target.bounds.x + (needsClimb ? (direction > 0 ? target.bounds.width + 16 : -16) : target.bounds.width / 2)
         : (root?.x ?? 0) + direction * Math.max(140, Math.min(320, action.durationMs * 0.18));
-      if (needsClimb) phaserWorld?.climbTo(targetX);
-      else phaserWorld?.walkTo(targetX);
+      const result = needsClimb
+        ? phaserWorld?.climbTo(targetX, undefined, target?.id ?? null)
+        : phaserWorld?.walkTo(targetX, undefined, target?.id ?? null);
+      if (!result?.started) {
+        diagnostics.info("movement_not_started", { action: action.type, reason: result?.reason ?? "physics_world_unavailable", targetId: target?.id });
+        return false;
+      }
       animController.playById("walk");
       return true;
     }
     case "jump":
-      phaserWorld?.jump();
+      if (!phaserWorld?.jump()) {
+        diagnostics.info("movement_not_started", { action: action.type, reason: "character_not_grounded" });
+        return false;
+      }
       animController.playById("happy");
       return true;
     case "climb": {
@@ -530,7 +544,11 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
       const targetX = target
         ? target.bounds.x + (direction > 0 ? target.bounds.width + 16 : -16)
         : (root?.x ?? 0) + direction * 180;
-      phaserWorld?.climbTo(targetX);
+      const result = phaserWorld?.climbTo(targetX, undefined, target?.id ?? null);
+      if (!result?.started) {
+        diagnostics.info("movement_not_started", { action: action.type, reason: result?.reason ?? "physics_world_unavailable", targetId: target?.id });
+        return false;
+      }
       animController.playById("walk");
       return true;
     }
@@ -969,7 +987,14 @@ function enterEditorMode(box: { x: number; y: number; width: number; height: num
     aiRegionCount: spike.analysis.character.partRegions.length,
     aiPartNames: spike.analysis.character.partRegions.map((region) => region.part),
     manifestPartCount: manifest.parts.length,
-    manifestParts: manifest.parts.map((part) => ({ part: part.part, strokes: part.strokeIds.length, hasPolygon: Boolean(part.polygon) })),
+    manifestParts: manifest.parts.map((part) => ({
+      part: part.part,
+      strokes: part.strokeIds.length,
+      hasPolygon: Boolean(part.polygon),
+      confidence: part.confidence,
+      source: part.source,
+    })),
+    uncertainParts: manifest.parts.filter((part) => (part.confidence ?? 0) < 0.5).map((part) => part.part),
     includedStrokes: manifest.includedStrokeIds.length,
   });
   editor.begin(includeSample ? box : characterGuideBox(), manifest, filter);
@@ -1114,6 +1139,9 @@ const pointer = new PointerInput(canvas, store, camera, {
   },
   onErase: (affectedStrokes) => {
     diagnostics.info("strokes_erased", { affectedStrokes });
+    const removedEntityIds = worldEntities.removeByStrokeIds(new Set(affectedStrokes));
+    removedEntityIds.forEach((id) => phaserWorld?.removeEntity(id));
+    if (removedEntityIds.length > 0) diagnostics.info("world_entities_erased", { removedEntityIds });
     hideRevive();
     scheduleSave();
     refreshReviewControls();
@@ -1240,14 +1268,21 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
     } else {
       phaserWorld?.syncCharacter(rigRuntime);
       if (phaserWorld?.isNavigating) {
-        physicsNavigationWasActive = true;
         const root = rigRuntime.jointWorld("root");
+        if (root) {
+          if (navigationLastX !== null) navigationTravel += Math.abs(root.x - navigationLastX);
+          navigationLastX = root.x;
+          animController.setWalkDistance(navigationTravel, 90 * rigRuntime.proportionScale);
+        }
+        physicsNavigationWasActive = true;
         if (root && root.x - camera.state.x > w * 0.58) {
           camera.setX(easeToward(camera.state.x, root.x - w * 0.38, dt));
           phaserWorld.setCameraX(camera.state.x);
         }
       } else if (physicsNavigationWasActive) {
         physicsNavigationWasActive = false;
+        navigationTravel = 0;
+        navigationLastX = null;
         if (animController.currentId === "walk") animController.playById("idle");
       }
     }
@@ -1256,16 +1291,17 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
     if (physicsMotion === "falling" && animController.currentId !== "fall") {
       rigRuntime.expression = "surprised";
       animController.playById("fall");
-    } else if (physicsMotion === "grounded" && animController.currentId === "fall") {
+    } else if ((physicsMotion === "grounded" || physicsMotion === "landing") && animController.currentId === "fall") {
       rigRuntime.expression = "neutral";
       animController.playById("idle");
     }
 
     const pose = animController.update(now);
+    if (animController.currentId !== "scratch_head") rigRuntime.clearIK();
     rigRuntime.applyPose({
       jointRotations: pose.jointRotations,
       rootDeltaX: 0,
-      rootDeltaY: pose.rootDeltaY,
+      rootDeltaY: pose.rootDeltaY * rigRuntime.proportionScale,
       rootRotation: pose.rootRotation,
     });
 
@@ -1357,6 +1393,7 @@ phaserWorld = new PhaserWorldController(
       configurePhysicsGround();
       if (rigRuntime) phaserWorld?.attachCharacter(rigRuntime);
     },
+    diagnostic: (event, detail) => diagnostics.info(event, detail),
   },
   window.innerWidth,
   window.innerHeight,

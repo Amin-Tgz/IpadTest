@@ -61,4 +61,12 @@ describe("stroke-store", () => {
     expect(store.byId("line")?.active).toBe(false);
     expect(store.active()).toHaveLength(2);
   });
+
+  it("reports original stroke ids for physics entity cleanup", () => {
+    const store = new StrokeStore();
+    store.add(makeStroke("world-ink"));
+    const result = store.eraseNearWithIds({ x: 1, y: 0 }, 8);
+    expect(result.count).toBe(1);
+    expect(result.strokeIds).toEqual(["world-ink"]);
+  });
 });

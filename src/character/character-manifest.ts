@@ -26,6 +26,8 @@ export interface PartManifest {
   part: string;
   strokeIds: string[];
   polygon?: Array<{ x: number; y: number }>;
+  confidence?: number;
+  source?: "ai" | "local" | "manual";
 }
 
 export interface SegmentOverride {
@@ -34,7 +36,7 @@ export interface SegmentOverride {
 }
 
 export interface CharacterManifest {
-  version: "1.0" | "2.0";
+  version: "1.0" | "2.0" | "3.0";
   joints: JointManifest[];
   face: FaceManifest;
   parts: PartManifest[];
@@ -139,25 +141,36 @@ export function buildManifest(
       .filter((stroke) => strokeIds.has(stroke.id) || stroke.points.some((point) => pointInPolygon(point, polygonWorld)))
       .map((stroke) => stroke.id);
     if (present.length > 0) {
-      parts.push({ part: region.part, strokeIds: present, polygon: polygonWorld });
+      const coveredSamples = strokes
+        .filter((stroke) => present.includes(stroke.id))
+        .flatMap((stroke) => stroke.points)
+        .filter((point) => pointInPolygon(point, polygonWorld)).length;
+      const totalSamples = Math.max(1, strokes.filter((stroke) => present.includes(stroke.id)).flatMap((stroke) => stroke.points).length);
+      parts.push({
+        part: region.part,
+        strokeIds: present,
+        polygon: polygonWorld,
+        confidence: Math.max(0.35, Math.min(1, coveredSamples / totalSamples)),
+        source: "ai",
+      });
       present.forEach((id) => covered.add(id));
     }
   }
 
   for (const inferred of inferSkeletonParts(joints, strokes)) {
     const family = partFamily(inferred.part);
-    if (parts.some((part) => partFamily(part.part) === family)) continue;
-    parts.push(inferred);
+    if (parts.some((part) => partFamily(part.part) === family && (part.confidence ?? 0) >= 0.55)) continue;
+    parts.push({ ...inferred, confidence: inferred.confidence ?? 0.72, source: "local" });
     inferred.strokeIds.forEach((id) => covered.add(id));
   }
 
   const uncoveredIncluded = [...included].filter((id) => !covered.has(id));
   if (uncoveredIncluded.length > 0) {
-    parts.push({ part: "body", strokeIds: uncoveredIncluded });
+    parts.push({ part: "body", strokeIds: uncoveredIncluded, confidence: 0.25, source: "local" });
   }
 
   return {
-    version: "2.0",
+    version: "3.0",
     joints,
     face,
     parts,
@@ -204,6 +217,8 @@ function inferSkeletonParts(
   return regions.map((region) => ({
     part: region.part,
     polygon: region.polygon,
+    confidence: 0.72,
+    source: "local" as const,
     strokeIds: strokes
       .filter((stroke) => stroke.points.some((point) => pointInPolygon(point, region.polygon)))
       .map((stroke) => stroke.id),
@@ -276,14 +291,18 @@ function partFamily(part: string): string {
 }
 
 export function migrateManifest(manifest: CharacterManifest): CharacterManifest {
-  if (manifest.version === "2.0") {
+  if (manifest.version === "3.0") {
     return { ...manifest, segmentOverrides: manifest.segmentOverrides ?? [] };
   }
   return {
     ...manifest,
-    version: "2.0",
-    parts: manifest.parts.map((part) => ({ ...part })),
-    segmentOverrides: [],
+    version: "3.0",
+    parts: manifest.parts.map((part) => ({
+      ...part,
+      confidence: part.confidence ?? (part.polygon ? 0.65 : 0.35),
+      source: part.source ?? "local",
+    })),
+    segmentOverrides: manifest.segmentOverrides ?? [],
   };
 }
 

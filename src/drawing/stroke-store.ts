@@ -84,8 +84,13 @@ export class StrokeStore {
   }
 
   eraseNear(point: { x: number; y: number }, radius = 16): number {
+    return this.eraseNearWithIds(point, radius).count;
+  }
+
+  eraseNearWithIds(point: { x: number; y: number }, radius = 16): { count: number; strokeIds: string[] } {
     const radiusSquared = radius * radius;
     let affected = 0;
+    const strokeIds: string[] = [];
     for (const stroke of [...this.strokes]) {
       if (!stroke.active || stroke.entityId !== null) continue;
       const keep = stroke.points.map((sample) => {
@@ -105,12 +110,13 @@ export class StrokeStore {
       });
       if (segment.length > 0) segments.push(segment);
       stroke.active = false;
+      strokeIds.push(stroke.id);
       this.onRemove.forEach((fn) => fn(stroke));
       affected += 1;
       segments.filter((samples) => samples.length >= 2).forEach((samples) => {
         this.add({ ...stroke, id: nextId("stroke"), points: samples, active: true });
       });
     }
-    return affected;
+    return { count: affected, strokeIds };
   }
 }

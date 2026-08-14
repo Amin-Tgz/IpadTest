@@ -4,6 +4,7 @@ export class AnimationController {
   private current: MotionClip | null = null;
   private startedAt = 0;
   private loopOverride: boolean | null = null;
+  private walkPhaseTimeMs: number | null = null;
   onClipEnd: (clipId: MotionId) => void = () => void 0;
 
   play(clip: MotionClip, options: { loop?: boolean } = {}): void {
@@ -19,6 +20,12 @@ export class AnimationController {
 
   stop(): void {
     this.current = null;
+  }
+
+  setWalkDistance(distance: number, strideLength: number): void {
+    const clip = MOTION_CLIPS.walk;
+    const stride = Math.max(20, strideLength);
+    this.walkPhaseTimeMs = ((Math.max(0, distance) % stride) / stride) * clip.durationMs;
   }
 
   get currentId(): MotionId | null {
@@ -37,7 +44,9 @@ export class AnimationController {
       this.onClipEnd(finished.id);
       return { jointRotations: {}, rootDeltaY: 0, rootRotation: 0 };
     }
-    const timeMs = loop ? elapsed % this.current.durationMs : Math.min(elapsed, this.current.durationMs);
+    const timeMs = this.current.id === "walk" && this.walkPhaseTimeMs !== null
+      ? this.walkPhaseTimeMs
+      : loop ? elapsed % this.current.durationMs : Math.min(elapsed, this.current.durationMs);
     return evaluateMotion(this.current, timeMs);
   }
 }

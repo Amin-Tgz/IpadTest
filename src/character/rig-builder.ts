@@ -1,6 +1,6 @@
 import type { StrokeStore, Stroke } from "../drawing/stroke-store.js";
 import { resampleUniform } from "../drawing/stroke-resampler.js";
-import type { CharacterManifest, JointManifest, FaceManifest } from "./character-manifest.js";
+import type { CharacterManifest, JointManifest, FaceManifest, PartManifest } from "./character-manifest.js";
 import type { JointId } from "../app/constants.js";
 import type { EntityTransform } from "./entity-transform.js";
 
@@ -15,7 +15,10 @@ export interface RigPoint {
   x: number;
   y: number;
   pressure: number;
+  /** Dominant semantic bone, retained for editor and manifest compatibility. */
   jointId: JointId;
+  /** One or two deformation bones. Weights always sum to one. */
+  influences: Array<{ jointId: JointId; weight: number }>;
 }
 
 export interface RigStroke {
@@ -114,8 +117,8 @@ function buildAutomaticConnectors(strokes: RigStroke[], joints: RigJoint[]): Rig
       color: left.stroke.color,
       baseWidth: (left.stroke.baseWidth + right.stroke.baseWidth) / 2,
       points: [
-        { ...left.point, jointId },
-        { ...right.point, jointId },
+        { ...left.point, jointId, influences: [{ jointId, weight: 1 }] },
+        { ...right.point, jointId, influences: [{ jointId, weight: 1 }] },
       ],
     });
   }
@@ -156,23 +159,66 @@ function buildRigStroke(
   manifest: CharacterManifest,
   origin: { x: number; y: number },
 ): RigStroke {
+  const points: RigPoint[] = stroke.points.map((p) => {
+    const local = { x: p.x - origin.x, y: p.y - origin.y };
+    const part = partAtPoint(p, stroke.id, manifest);
+    const candidates = partCandidates(part, joints);
+    const influences = pointInfluences(local.x, local.y, candidates, joints);
+    const nearest = influences[0];
+    return {
+      x: local.x,
+      y: local.y,
+      pressure: p.pressure,
+      jointId: nearest?.jointId ?? ("root" as JointId),
+      influences: influences.length > 0 ? influences : [{ jointId: "root" as JointId, weight: 1 }],
+    };
+  });
+  // Remove isolated ownership flicker caused by overlapping polygons or a
+  // single sample crossing a joint boundary. Real transitions remain intact.
+  for (let index = 1; index < points.length - 1; index++) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const next = points[index + 1];
+    if (previous.jointId === next.jointId && current.jointId !== previous.jointId) {
+      current.jointId = previous.jointId;
+      current.influences = previous.influences.map((influence) => ({ ...influence }));
+    }
+  }
   return {
     id: stroke.id,
     color: stroke.color,
     baseWidth: stroke.baseWidth,
-    points: stroke.points.map((p) => {
-      const local = { x: p.x - origin.x, y: p.y - origin.y };
-      const part = partAtPoint(p, stroke.id, manifest);
-      const candidates = partCandidates(part, joints);
-      const nearest = nearestJoint(local.x, local.y, candidates);
-      return {
-        x: local.x,
-        y: local.y,
-        pressure: p.pressure,
-        jointId: nearest ? nearest.id : ("root" as JointId),
-      };
-    }),
+    points,
   };
+}
+
+export function pointInfluences(
+  x: number,
+  y: number,
+  candidates: RigJoint[],
+  allJoints: RigJoint[] = candidates,
+): Array<{ jointId: JointId; weight: number }> {
+  const ranked = candidates
+    .map((joint) => ({ joint, distance: Math.hypot(x - joint.restX, y - joint.restY) }))
+    .sort((a, b) => a.distance - b.distance);
+  const primary = ranked[0];
+  if (!primary) return [];
+  const secondary = ranked.find((entry, index) => index > 0 && compatibleBones(primary.joint.id, entry.joint.id, allJoints));
+  if (!secondary) return [{ jointId: primary.joint.id, weight: 1 }];
+  const ys = allJoints.map((joint) => joint.restY);
+  const characterHeight = ys.length > 1 ? Math.max(...ys) - Math.min(...ys) : 200;
+  const blendRadius = Math.max(20, Math.min(60, characterHeight * 0.3));
+  if (primary.distance > blendRadius || secondary.distance > blendRadius * 1.35) {
+    return [{ jointId: primary.joint.id, weight: 1 }];
+  }
+  const inversePrimary = 1 / Math.max(1, primary.distance);
+  const inverseSecondary = 1 / Math.max(1, secondary.distance);
+  const total = inversePrimary + inverseSecondary;
+  const primaryWeight = Math.max(0.58, inversePrimary / total);
+  return [
+    { jointId: primary.joint.id, weight: primaryWeight },
+    { jointId: secondary.joint.id, weight: 1 - primaryWeight },
+  ];
 }
 
 function partAtPoint(
@@ -184,10 +230,25 @@ function partAtPoint(
     const override = manifest.segmentOverrides![index];
     if (pointInPolygon(point, override.polygon)) return override.part;
   }
-  const region = manifest.parts.find((part) =>
-    part.strokeIds.includes(strokeId) && part.polygon && pointInPolygon(point, part.polygon),
-  );
+  const region = manifest.parts
+    .filter((part) => part.strokeIds.includes(strokeId) && part.polygon && pointInPolygon(point, part.polygon))
+    .sort((left, right) => {
+      const sourceBoost = (part: PartManifest) => part.source === "local" ? 0.08 : 0;
+      const leftArea = polygonArea(left.polygon!);
+      const rightArea = polygonArea(right.polygon!);
+      return ((right.confidence ?? 0.5) + sourceBoost(right) - Math.log1p(rightArea) * 0.015) -
+        ((left.confidence ?? 0.5) + sourceBoost(left) - Math.log1p(leftArea) * 0.015);
+    })[0];
   return region?.part ?? manifest.parts.find((part) => part.strokeIds.includes(strokeId))?.part;
+}
+
+function polygonArea(polygon: Array<{ x: number; y: number }>): number {
+  let area = 0;
+  for (let index = 0; index < polygon.length; index++) {
+    const next = polygon[(index + 1) % polygon.length];
+    area += polygon[index].x * next.y - next.x * polygon[index].y;
+  }
+  return Math.abs(area) / 2;
 }
 
 export function pointInPolygon(

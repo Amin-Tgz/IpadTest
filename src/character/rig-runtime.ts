@@ -2,6 +2,7 @@ import type { Rig, RigFaceGroup, RigPoint } from "./rig-builder.js";
 import type { JointId } from "../app/constants.js";
 import type { Camera } from "../world/camera.js";
 import { inverseTransformWorldPoint, transformLocalPoint, type EntityTransform } from "./entity-transform.js";
+import { solveTwoBoneIK } from "../animation/two-bone-ik.js";
 
 export interface RigPose {
   jointRotations: Partial<Record<JointId, number>>;
@@ -41,6 +42,7 @@ export class RigRuntime {
   expression: FaceExpression = "neutral";
 
   private jointsById = new Map<JointId, Rig["joints"][number]>();
+  private ikRotations: Partial<Record<JointId, number>> = {};
 
   constructor(
     private readonly rig: Rig,
@@ -90,6 +92,12 @@ export class RigRuntime {
     return { ...this.rig.transform };
   }
 
+  get proportionScale(): number {
+    const ys = this.rig.joints.map((joint) => joint.restY);
+    const height = ys.length > 1 ? Math.max(...ys) - Math.min(...ys) : 300;
+    return Math.max(0.65, Math.min(2.25, height / 300));
+  }
+
   setEntityTransform(transform: EntityTransform): void {
     this.rig.transform = { ...transform };
   }
@@ -111,7 +119,35 @@ export class RigRuntime {
   }
 
   applyPose(pose: RigPose): void {
-    this.pose = pose;
+    this.pose = { ...pose, jointRotations: { ...pose.jointRotations, ...this.ikRotations } };
+  }
+
+  aimLimb(
+    rootId: JointId,
+    middleId: JointId,
+    endId: JointId,
+    targetWorld: { x: number; y: number },
+    bendDirection: -1 | 1 = 1,
+  ): boolean {
+    const root = this.jointsById.get(rootId);
+    const middle = this.jointsById.get(middleId);
+    const end = this.jointsById.get(endId);
+    if (!root || !middle || !end) return false;
+    const target = this.worldToLocal(targetWorld);
+    const solution = solveTwoBoneIK(
+      { x: root.restX, y: root.restY },
+      { x: middle.restX, y: middle.restY },
+      { x: end.restX, y: end.restY },
+      target,
+      bendDirection,
+    );
+    this.ikRotations[rootId] = solution.rootRotation;
+    this.ikRotations[middleId] = solution.jointRotation;
+    return true;
+  }
+
+  clearIK(): void {
+    this.ikRotations = {};
   }
 
   update(timeMs: number): void {
@@ -174,41 +210,44 @@ export class RigRuntime {
     return p;
   }
 
-  private transformPoint(point: RigPoint): { x: number; y: number } {
-    const joint = this.jointsById.get(point.jointId);
+  private transformPointByJoint(point: RigPoint, jointId: JointId): { x: number; y: number } {
+    const joint = this.jointsById.get(jointId);
     if (!joint) return { x: point.x, y: point.y };
 
-    const accRotation = degToRad(this.accumulatedRotation(point.jointId, new Map()));
-    const pos = this.fkPosition(point.jointId, new Map());
+    const accRotation = degToRad(this.accumulatedRotation(jointId, new Map()));
+    const pos = this.fkPosition(jointId, new Map());
     const dx = point.x - joint.restX;
     const dy = point.y - joint.restY;
     const cos = Math.cos(accRotation);
     const sin = Math.sin(accRotation);
-    return this.localToWorld({
+    return {
       x: pos.x + dx * cos - dy * sin,
       y: pos.y + dx * sin + dy * cos,
-    });
+    };
+  }
+
+  private transformPoint(point: RigPoint): { x: number; y: number } {
+    const influences = point.influences?.length
+      ? point.influences
+      : [{ jointId: point.jointId, weight: 1 }];
+    let x = 0;
+    let y = 0;
+    let total = 0;
+    for (const influence of influences) {
+      const transformed = this.transformPointByJoint(point, influence.jointId);
+      x += transformed.x * influence.weight;
+      y += transformed.y * influence.weight;
+      total += influence.weight;
+    }
+    const local = total > 0 ? { x: x / total, y: y / total } : { x: point.x, y: point.y };
+    return this.localToWorld(local);
   }
 
   transformedStrokeSegments(): Array<Array<Array<{ x: number; y: number }>>> {
     const transformed = this.transformedStrokePoints();
-    return transformed.map((points, strokeIndex) => {
-      const source = this.rig.strokes[strokeIndex]?.points ?? [];
-      if (points.length === 0) return [];
-      const segments: Array<Array<{ x: number; y: number }>> = [];
-      let current = [points[0]];
-      for (let index = 1; index < points.length; index++) {
-        if (source[index]?.jointId !== source[index - 1]?.jointId) {
-          current.push(points[index]);
-          if (current.length >= 2) segments.push(current);
-          current = [points[index - 1], points[index]];
-        } else {
-          current.push(points[index]);
-        }
-      }
-      if (current.length >= 2) segments.push(current);
-      return segments;
-    });
+    // Weighted skinning keeps adjacent samples continuous across a joint, so
+    // splitting a user's stroke at ownership boundaries would create cracks.
+    return transformed.map((points) => points.length >= 2 ? [points] : []);
   }
 
   transformedStrokePoints(): Array<Array<{ x: number; y: number }>> {
