@@ -104,4 +104,25 @@ describe("buildAttachmentFromObject", () => {
     expect(attachment.sourceStrokeIds).toEqual(["shoe_1", "shoe_2", "shoe_3"]);
     expect(store.byId("shoe_1")?.entityId).toBe(attachment.id);
   });
+
+  it("keeps an entire selected stroke even when the AI box covers only part of it", () => {
+    const store = new StrokeStore();
+    store.add({
+      id: "balloon_and_string",
+      points: [
+        { x: 150, y: 100, pressure: 0.5, time: 0 },
+        { x: 160, y: 110, pressure: 0.5, time: 1 },
+        { x: 160, y: 260, pressure: 0.5, time: 2 },
+      ],
+      color: "#F7F5EE", baseWidth: 4, tool: "pen", createdAt: 0, worldSpace: true, entityId: null, active: true, groupId: null,
+    });
+    const rt = runtime();
+    const idMap = { sampleStrokesInRegion: () => new Set(["balloon_and_string"]) } as unknown as IdMap;
+    const attachment = buildAttachmentFromObject(
+      { type: "balloon", category: "held_tool", boundingBox: { x: 140, y: 90, width: 40, height: 40 }, attachTo: "right_hand", anchor: { x: 160, y: 250 } },
+      store, idMap, rt, 0,
+    )!;
+    expect(attachment.strokes[0].localPoints).toHaveLength(3);
+    expect(Math.max(...attachment.strokes[0].localPoints.map((point) => point.y))).toBe(10);
+  });
 });

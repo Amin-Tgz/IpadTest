@@ -19,6 +19,12 @@ describe("evaluateMotion", () => {
     const pose = evaluateMotion(MOTION_CLIPS.spawn, 999999);
     expect(pose.rootDeltaY).toBeCloseTo(0, 5);
   });
+
+  it("raises both arms during the falling motion", () => {
+    const pose = evaluateMotion(MOTION_CLIPS.fall, MOTION_CLIPS.fall.durationMs * 0.5);
+    expect(pose.jointRotations.left_shoulder).toBeLessThan(-80);
+    expect(pose.jointRotations.right_shoulder).toBeGreaterThan(80);
+  });
 });
 
 describe("AnimationController", () => {

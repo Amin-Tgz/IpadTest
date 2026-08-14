@@ -72,9 +72,10 @@ export function buildAttachmentFromObject(
   const attachmentStrokes: AttachmentStroke[] = [];
   for (const stroke of store.all()) {
     if (!stroke.active || !strokeIds.has(stroke.id) || (allowedStrokeIds && !allowedStrokeIds.has(stroke.id))) continue;
-    const points = stroke.points
-      .filter((p) => p.x >= box.x && p.x <= box.x + box.width && p.y >= box.y && p.y <= box.y + box.height)
-      .map((p) => ({ x: p.x, y: p.y }));
+    // The detection box chooses which strokes belong to the object, but it must
+    // not crop those strokes. A balloon string, handle, or hat brim can extend
+    // well outside an imperfect AI box and should still move as one drawing.
+    const points = stroke.points.map((p) => ({ x: p.x, y: p.y }));
     if (points.length === 0) continue;
     attachmentStrokes.push({
       sourceStrokeId: stroke.id,

@@ -58,4 +58,13 @@ describe("ground-path", () => {
     expect(ground.eraseNear({ x: 150, y: 180 }, 24)).toBe(false);
     expect(ground.screenPolylines(0)).toHaveLength(1);
   });
+
+  it("exposes erased ground as a real collision gap", () => {
+    const ground = new GroundPath([{ x: 0, y: 100 }, { x: 300, y: 100 }]);
+    ground.eraseNear({ x: 150, y: 100 }, 24);
+    expect(ground.solidRanges(0, 300)).toEqual([
+      { minX: 0, maxX: 126 },
+      { minX: 174, maxX: 300 },
+    ]);
+  });
 });

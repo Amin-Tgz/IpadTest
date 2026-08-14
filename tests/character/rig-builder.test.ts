@@ -80,4 +80,43 @@ describe("buildRig", () => {
     expect(rig.face.leftEye!.points.length).toBeGreaterThan(0);
     expect(rig.face.mouth).toBeNull();
   });
+
+  it("adds a non-destructive connector between nearby pen lifts", () => {
+    const store = new StrokeStore();
+    makeStroke(store, "leg", [[100, 210], [100, 250]]);
+    makeStroke(store, "eye", [[100, 258], [100, 300]]);
+    const connectorManifest: CharacterManifest = {
+      ...manifest,
+      face: {},
+      includedStrokeIds: ["leg", "eye"],
+      parts: [
+        { part: "left_leg", strokeIds: ["leg"] },
+        { part: "left_leg", strokeIds: ["eye"] },
+      ],
+    };
+    const rig = buildRig(connectorManifest, store);
+    expect(rig.strokes.some((stroke) => stroke.id.startsWith("auto_connector_"))).toBe(true);
+    expect(store.all()).toHaveLength(2);
+  });
+
+  it("assigns nearby facial ink to distinct eyes and eyebrows", () => {
+    const store = new StrokeStore();
+    makeStroke(store, "left_eye", [[93, 94], [93, 100]]);
+    makeStroke(store, "right_eye", [[107, 94], [107, 100]]);
+    makeStroke(store, "left_brow", [[89, 86], [96, 84]]);
+    makeStroke(store, "right_brow", [[104, 84], [111, 86]]);
+    const facialManifest: CharacterManifest = {
+      ...manifest,
+      includedStrokeIds: ["left_eye", "right_eye", "left_brow", "right_brow"],
+      face: {
+        leftEye: { x: 93, y: 97 }, rightEye: { x: 107, y: 97 },
+        leftEyebrow: { x: 93, y: 85 }, rightEyebrow: { x: 107, y: 85 },
+      },
+    };
+    const face = buildRig(facialManifest, store).face;
+    expect(face.leftEye?.points).toHaveLength(2);
+    expect(face.rightEye?.points).toHaveLength(2);
+    expect(face.leftEyebrow?.points).toHaveLength(2);
+    expect(face.rightEyebrow?.points).toHaveLength(2);
+  });
 });

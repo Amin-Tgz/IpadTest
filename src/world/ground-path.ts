@@ -104,6 +104,20 @@ export class GroundPath {
     return this.erasedRanges.length > 0;
   }
 
+  solidRanges(minX: number, maxX: number): Array<{ minX: number; maxX: number }> {
+    const solid: Array<{ minX: number; maxX: number }> = [];
+    let cursor = minX;
+    for (const erased of this.erasedRanges) {
+      const start = Math.max(minX, erased.minX);
+      const end = Math.min(maxX, erased.maxX);
+      if (end <= minX || start >= maxX) continue;
+      if (start > cursor) solid.push({ minX: cursor, maxX: start });
+      cursor = Math.max(cursor, end);
+    }
+    if (cursor < maxX) solid.push({ minX: cursor, maxX });
+    return solid.filter((range) => range.maxX - range.minX >= 2);
+  }
+
   private mergeErasedRanges(): void {
     const sorted = [...this.erasedRanges].sort((a, b) => a.minX - b.minX);
     const merged: Array<{ minX: number; maxX: number }> = [];

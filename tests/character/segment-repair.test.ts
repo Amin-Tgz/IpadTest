@@ -24,4 +24,15 @@ describe("SegmentRepairEditor", () => {
     expect(editor.manifest.segmentOverrides).toMatchObject([{ part: "left_arm" }]);
     expect(editor.manifest.includedStrokeIds).toEqual([]);
   });
+
+  it("undoes the latest body-part correction", () => {
+    const editor = new SegmentRepairEditor(structuredClone(manifest));
+    editor.pointerDown({ x: 0, y: 0 });
+    editor.pointerMove({ x: 20, y: 0 });
+    editor.pointerMove({ x: 20, y: 20 });
+    editor.pointerUp();
+    expect(editor.undo()).toBe(true);
+    expect(editor.manifest.segmentOverrides).toEqual([]);
+    expect(editor.undo()).toBe(false);
+  });
 });

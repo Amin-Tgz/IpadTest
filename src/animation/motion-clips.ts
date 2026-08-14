@@ -6,6 +6,7 @@ export type MotionId =
   | "happy"
   | "confused"
   | "scratch_head"
+  | "fall"
   | "sad"
   | "talk"
   | "walk"
@@ -185,6 +186,19 @@ export const MOTION_CLIPS: Record<MotionId, MotionClip> = {
       right_elbow: track([[0, 0], [0.28, 75], [0.48, 62], [0.68, 78], [1, 0]]),
       right_hand: track([[0, 0], [0.4, 12], [0.55, -10], [0.7, 12], [1, 0]]),
     },
+  },
+  fall: {
+    id: "fall",
+    durationMs: 700,
+    loop: true,
+    jointTracks: {
+      head: track([[0, -4], [0.5, 4], [1, -4]]),
+      left_shoulder: track([[0, -95], [0.5, -112], [1, -95]]),
+      right_shoulder: track([[0, 95], [0.5, 112], [1, 95]]),
+      left_elbow: track([[0, -22], [0.5, 16], [1, -22]]),
+      right_elbow: track([[0, 22], [0.5, -16], [1, 22]]),
+    },
+    rootRotation: track([[0, -3], [0.5, 3], [1, -3]]),
   },
   sad: {
     id: "sad",

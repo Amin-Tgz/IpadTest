@@ -26,6 +26,7 @@ export interface RigStroke {
 }
 
 export interface RigFaceGroup {
+  kind: "leftEye" | "rightEye" | "leftEyebrow" | "rightEyebrow" | "mouth";
   jointId: JointId;
   restX: number;
   restY: number;
@@ -35,6 +36,8 @@ export interface RigFaceGroup {
 export interface RigFace {
   leftEye: RigFaceGroup | null;
   rightEye: RigFaceGroup | null;
+  leftEyebrow: RigFaceGroup | null;
+  rightEyebrow: RigFaceGroup | null;
   mouth: RigFaceGroup | null;
 }
 
@@ -61,9 +64,9 @@ export function buildRig(manifest: CharacterManifest, store: StrokeStore): Rig {
     .all()
     .filter((s) => s.active && manifest.includedStrokeIds.includes(s.id));
 
-  const rigStrokes = strokes.map((s) => buildRigStroke(s, joints, manifest, origin));
-
-  const face = buildFace(toLocalFace(manifest.face, origin), rigStrokes, joints);
+  const baseStrokes = strokes.map((s) => buildRigStroke(s, joints, manifest, origin));
+  const face = buildFace(toLocalFace(manifest.face, origin), baseStrokes, joints);
+  const rigStrokes = [...baseStrokes, ...buildAutomaticConnectors(baseStrokes, joints)];
 
   return {
     joints,
@@ -71,6 +74,63 @@ export function buildRig(manifest: CharacterManifest, store: StrokeStore): Rig {
     face,
     transform: { x: origin.x, y: origin.y, rotation: 0, scaleX: 1, scaleY: 1 },
   };
+}
+
+function buildAutomaticConnectors(strokes: RigStroke[], joints: RigJoint[]): RigStroke[] {
+  const ys = joints.map((joint) => joint.restY);
+  const characterHeight = ys.length > 1 ? Math.max(...ys) - Math.min(...ys) : 200;
+  const maxDistance = Math.max(10, Math.min(36, characterHeight * 0.075));
+  const endpoints = strokes.flatMap((stroke, strokeIndex) => {
+    if (stroke.points.length < 2) return [];
+    return [0, stroke.points.length - 1].map((pointIndex) => ({
+      strokeIndex,
+      pointIndex,
+      point: stroke.points[pointIndex],
+      stroke,
+    }));
+  }).filter((endpoint) => endpoint.point.jointId !== "head");
+  const candidates: Array<{ a: number; b: number; distance: number }> = [];
+  for (let a = 0; a < endpoints.length; a++) {
+    for (let b = a + 1; b < endpoints.length; b++) {
+      const left = endpoints[a];
+      const right = endpoints[b];
+      if (left.strokeIndex === right.strokeIndex || !compatibleBones(left.point.jointId, right.point.jointId, joints)) continue;
+      const distance = Math.hypot(left.point.x - right.point.x, left.point.y - right.point.y);
+      if (distance > 1.5 && distance <= maxDistance) candidates.push({ a, b, distance });
+    }
+  }
+  candidates.sort((left, right) => left.distance - right.distance);
+  const used = new Set<number>();
+  const connectors: RigStroke[] = [];
+  for (const candidate of candidates) {
+    if (used.has(candidate.a) || used.has(candidate.b)) continue;
+    const left = endpoints[candidate.a];
+    const right = endpoints[candidate.b];
+    used.add(candidate.a);
+    used.add(candidate.b);
+    const jointId = left.point.jointId === right.point.jointId ? left.point.jointId : childBone(left.point.jointId, right.point.jointId, joints);
+    connectors.push({
+      id: `auto_connector_${left.stroke.id}_${right.stroke.id}`,
+      color: left.stroke.color,
+      baseWidth: (left.stroke.baseWidth + right.stroke.baseWidth) / 2,
+      points: [
+        { ...left.point, jointId },
+        { ...right.point, jointId },
+      ],
+    });
+  }
+  return connectors;
+}
+
+function compatibleBones(left: JointId, right: JointId, joints: RigJoint[]): boolean {
+  if (left === right) return true;
+  const leftJoint = joints.find((joint) => joint.id === left);
+  const rightJoint = joints.find((joint) => joint.id === right);
+  return leftJoint?.parent === right || rightJoint?.parent === left;
+}
+
+function childBone(left: JointId, right: JointId, joints: RigJoint[]): JointId {
+  return joints.find((joint) => joint.id === left)?.parent === right ? left : right;
 }
 
 export function nearestJoint(
@@ -148,13 +208,24 @@ export function pointInPolygon(
 function toLocalFace(face: FaceManifest, origin: { x: number; y: number }): FaceManifest {
   const local = (point: { x: number; y: number } | undefined) =>
     point ? { x: point.x - origin.x, y: point.y - origin.y } : undefined;
-  return { leftEye: local(face.leftEye), rightEye: local(face.rightEye), mouth: local(face.mouth) };
+  return {
+    leftEye: local(face.leftEye),
+    rightEye: local(face.rightEye),
+    leftEyebrow: local(face.leftEyebrow),
+    rightEyebrow: local(face.rightEyebrow),
+    mouth: local(face.mouth),
+  };
 }
 
 function partCandidates(part: string | undefined, joints: RigJoint[]): RigJoint[] {
   const names = part?.toLowerCase() ?? "";
   const matching = joints.filter((joint) => {
-    if (names.includes("head") || names.includes("hair") || names.includes("hat")) return joint.id === "head";
+    if (names.includes("eyebrow") || names.includes("brow") || names.includes("head") || names.includes("hair") || names.includes("hat")) return joint.id === "head";
+    if (names.includes("finger") || names.includes("thumb")) {
+      if (names.includes("left")) return joint.id === "left_hand";
+      if (names.includes("right")) return joint.id === "right_hand";
+      return joint.id === "left_hand" || joint.id === "right_hand";
+    }
     if (names.includes("left") && (names.includes("arm") || names.includes("hand"))) return joint.id.startsWith("left_") && (joint.id.includes("shoulder") || joint.id.includes("elbow") || joint.id.includes("hand"));
     if (names.includes("right") && (names.includes("arm") || names.includes("hand"))) return joint.id.startsWith("right_") && (joint.id.includes("shoulder") || joint.id.includes("elbow") || joint.id.includes("hand"));
     if (names.includes("left") && (names.includes("leg") || names.includes("foot"))) return joint.id.startsWith("left_") && (joint.id.includes("hip") || joint.id.includes("knee") || joint.id.includes("foot"));
@@ -169,25 +240,47 @@ function buildFace(
   rigStrokes: RigStroke[],
   joints: RigJoint[],
 ): RigFace {
-  const collect = (
-    anchor: { x: number; y: number } | undefined,
-    jointId: JointId,
-  ): RigFaceGroup | null => {
-    if (!anchor) return null;
-    const points: Array<{ stroke: number; point: number }> = [];
-    rigStrokes.forEach((rigStroke, strokeIndex) => {
-      rigStroke.points.forEach((p, pointIndex) => {
-        if (Math.hypot(p.x - anchor.x, p.y - anchor.y) <= FACE_RADIUS) {
-          points.push({ stroke: strokeIndex, point: pointIndex });
-        }
-      });
-    });
-    return { jointId, restX: anchor.x, restY: anchor.y, points };
-  };
+  const headX = joints.find((joint) => joint.id === "head")?.restX ?? 0;
+  const mirror = (point: { x: number; y: number }) => ({ x: headX * 2 - point.x, y: point.y });
+  const anchors: FaceManifest = { ...face };
+  if (!anchors.leftEye && anchors.rightEye) anchors.leftEye = mirror(anchors.rightEye);
+  if (!anchors.rightEye && anchors.leftEye) anchors.rightEye = mirror(anchors.leftEye);
+  if (!anchors.leftEyebrow && anchors.rightEyebrow) anchors.leftEyebrow = mirror(anchors.rightEyebrow);
+  if (!anchors.rightEyebrow && anchors.leftEyebrow) anchors.rightEyebrow = mirror(anchors.leftEyebrow);
 
+  const kinds = ["leftEye", "rightEye", "leftEyebrow", "rightEyebrow", "mouth"] as const;
+  const groups = new Map<(typeof kinds)[number], RigFaceGroup>();
+  for (const kind of kinds) {
+    const anchor = anchors[kind];
+    if (anchor) groups.set(kind, { kind, jointId: "head", restX: anchor.x, restY: anchor.y, points: [] });
+  }
+
+  // A point belongs to only its nearest facial feature. This prevents two
+  // close eyes from sharing ink and makes a blink affect both independently.
+  rigStrokes.forEach((rigStroke, strokeIndex) => {
+    rigStroke.points.forEach((point, pointIndex) => {
+      let nearest: RigFaceGroup | null = null;
+      let distance = FACE_RADIUS;
+      for (const group of groups.values()) {
+        const candidate = Math.hypot(point.x - group.restX, point.y - group.restY);
+        if (candidate <= distance) {
+          nearest = group;
+          distance = candidate;
+        }
+      }
+      nearest?.points.push({ stroke: strokeIndex, point: pointIndex });
+    });
+  });
+
+  const populated = (kind: (typeof kinds)[number]): RigFaceGroup | null => {
+    const group = groups.get(kind);
+    return group && group.points.length > 0 ? group : null;
+  };
   return {
-    leftEye: collect(face.leftEye, "head"),
-    rightEye: collect(face.rightEye, "head"),
-    mouth: collect(face.mouth, "head"),
+    leftEye: populated("leftEye"),
+    rightEye: populated("rightEye"),
+    leftEyebrow: populated("leftEyebrow"),
+    rightEyebrow: populated("rightEyebrow"),
+    mouth: populated("mouth"),
   };
 }

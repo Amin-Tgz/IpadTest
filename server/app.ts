@@ -61,7 +61,15 @@ export function createApp(deps: AppDeps = {}) {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const config = loadConfig();
   const app = createApp({ config });
-  app.listen(config.PORT, () => {
+  const server = app.listen(config.PORT, () => {
     console.log(`[pencil-ai] server listening on http://localhost:${config.PORT}`);
+  });
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(`[pencil-ai] port ${config.PORT} is already in use. Stop the existing Pencil AI server or change PORT in .env.`);
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
   });
 }

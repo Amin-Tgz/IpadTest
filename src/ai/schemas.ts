@@ -20,6 +20,8 @@ export interface PartRegion {
 export interface FaceAnchors {
   leftEye?: Vec2;
   rightEye?: Vec2;
+  leftEyebrow?: Vec2;
+  rightEyebrow?: Vec2;
   mouth?: Vec2;
 }
 

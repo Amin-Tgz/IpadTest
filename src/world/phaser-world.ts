@@ -40,12 +40,13 @@ export class LivingDrawingScene extends Phaser.Scene {
 
 export class PhaserWorldController {
   private scene: LivingDrawingScene | null = null;
-  private floor: MatterJS.BodyType | null = null;
+  private floors: MatterJS.BodyType[] = [];
   private characterBody: MatterJS.BodyType | null = null;
   private characterRootOffset = { x: 0, y: 0 };
   private characterHalfHeight = 20;
   private readonly entityBodies = new Map<string, MatterJS.BodyType[]>();
   private readonly pendingEntities = new Map<string, PhysicsEntitySpec>();
+  private navigation: { targetX: number; speed: number; climb: boolean; nextLiftAt: number } | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -58,6 +59,7 @@ export class PhaserWorldController {
       ...callbacks,
       ready: (readyScene) => {
         this.scene = readyScene;
+        readyScene.events.on(Phaser.Scenes.Events.UPDATE, (time: number) => this.updateNavigation(time));
         for (const spec of this.pendingEntities.values()) this.addEntity(spec);
         callbacks.ready?.(readyScene);
       },
@@ -90,17 +92,27 @@ export class PhaserWorldController {
     this.scene?.cameras.main.setScroll(x, 0);
   }
 
-  configureGround(width: number, baselineY: number): void {
+  configureGround(
+    width: number,
+    baselineY: number,
+    solidRanges?: Array<{ minX: number; maxX: number }>,
+  ): void {
     const scene = this.scene;
     if (!scene) return;
-    if (this.floor) scene.matter.world.remove(this.floor);
     const worldWidth = Math.max(width * 4, 4096);
-    this.floor = scene.matter.add.rectangle(worldWidth / 2, baselineY + 34, worldWidth, 68, {
-      isStatic: true,
-      label: "drawn-ground",
-      friction: 0.9,
-      restitution: 0,
+    for (const floor of this.floors) scene.matter.world.remove(floor);
+    this.floors = (solidRanges ?? [{ minX: 0, maxX: worldWidth }]).map((range) => {
+      const rangeWidth = range.maxX - range.minX;
+      return scene.matter.add.rectangle(range.minX + rangeWidth / 2, baselineY + 34, rangeWidth, 68, {
+        isStatic: true,
+        label: "drawn-ground",
+        friction: 0.9,
+        restitution: 0,
+      });
     });
+    if (this.characterBody) {
+      scene.matter.body.setVelocity(this.characterBody, { x: this.characterBody.velocity.x, y: Math.max(0.15, this.characterBody.velocity.y) });
+    }
   }
 
   attachCharacter(runtime: RigRuntime): void {
@@ -170,6 +182,34 @@ export class PhaserWorldController {
     });
   }
 
+  walkTo(targetX: number, speed = 3.2): boolean {
+    if (!this.characterBody) return false;
+    this.navigation = { targetX, speed: Math.abs(speed), climb: false, nextLiftAt: 0 };
+    return true;
+  }
+
+  climbTo(targetX: number, speed = 2.8): boolean {
+    if (!this.characterBody) return false;
+    this.navigation = { targetX, speed: Math.abs(speed), climb: true, nextLiftAt: 0 };
+    return true;
+  }
+
+  stopNavigation(): void {
+    this.navigation = null;
+    this.moveCharacter(0);
+  }
+
+  get isNavigating(): boolean {
+    return this.navigation !== null;
+  }
+
+  motionState(): "grounded" | "rising" | "falling" {
+    if (!this.characterBody) return "grounded";
+    if (this.characterBody.velocity.y > 1.4) return "falling";
+    if (this.characterBody.velocity.y < -1.4) return "rising";
+    return "grounded";
+  }
+
   jump(strength = 9): boolean {
     if (!this.scene || !this.characterBody || !this.isGrounded()) return false;
     this.scene.matter.body.setVelocity(this.characterBody, {
@@ -180,9 +220,34 @@ export class PhaserWorldController {
   }
 
   isGrounded(): boolean {
-    if (!this.characterBody || !this.floor) return false;
-    const footY = this.characterBody.position.y + this.characterHalfHeight;
-    return Math.abs(footY - (this.floor.position.y - 34)) < 8 && Math.abs(this.characterBody.velocity.y) < 1.2;
+    if (!this.characterBody) return false;
+    const supports = [
+      ...this.floors,
+      ...[...this.entityBodies.values()].flat().filter((body) => body.isStatic),
+    ];
+    const footY = this.characterBody.bounds.max.y;
+    return supports.some((support) => {
+      const overlapsX = this.characterBody!.bounds.max.x >= support.bounds.min.x - 2 &&
+        this.characterBody!.bounds.min.x <= support.bounds.max.x + 2;
+      return overlapsX && Math.abs(footY - support.bounds.min.y) < 10 && Math.abs(this.characterBody!.velocity.y) < 1.2;
+    });
+  }
+
+  private updateNavigation(time: number): void {
+    if (!this.scene || !this.characterBody || !this.navigation) return;
+    const dx = this.navigation.targetX - this.characterBody.position.x;
+    if (Math.abs(dx) <= 12) {
+      this.stopNavigation();
+      return;
+    }
+    const direction = dx < 0 ? -1 : 1;
+    const velocityY = this.characterBody.velocity.y;
+    let nextY = velocityY;
+    if (this.navigation.climb && time >= this.navigation.nextLiftAt && velocityY > -1.2) {
+      nextY = -5.4;
+      this.navigation.nextLiftAt = time + 430;
+    }
+    this.scene.matter.body.setVelocity(this.characterBody, { x: direction * this.navigation.speed, y: nextY });
   }
 
   addEntity(spec: PhysicsEntitySpec): void {

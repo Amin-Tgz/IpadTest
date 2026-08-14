@@ -22,6 +22,8 @@ export interface FaceLook {
   targetY: number | null;
 }
 
+export type FaceExpression = "neutral" | "happy" | "sad" | "surprised";
+
 const LOOK_MAX_OFFSET = 7;
 const BLINK_INTERVAL_MS = 3200;
 const BLINK_DURATION_MS = 140;
@@ -36,6 +38,7 @@ export class RigRuntime {
   private blinkStarted = false;
   look: FaceLook = { targetX: null, targetY: null };
   talkActive = false;
+  expression: FaceExpression = "neutral";
 
   private jointsById = new Map<JointId, Rig["joints"][number]>();
 
@@ -57,6 +60,11 @@ export class RigRuntime {
 
   get face(): Rig["face"] {
     return this.rig.face;
+  }
+
+  faceAnchorWorld(kind: keyof Rig["face"]): { x: number; y: number } | null {
+    const group = this.rig.face[kind];
+    return group ? this.localToWorld({ x: group.restX, y: group.restY }) : null;
   }
 
   restJoint(id: JointId): { x: number; y: number } | null {
@@ -212,7 +220,13 @@ export class RigRuntime {
         ? { x: this.look.targetX, y: this.look.targetY }
         : null;
 
-    const groups = [this.rig.face.leftEye, this.rig.face.rightEye, this.rig.face.mouth].filter(
+    const groups = [
+      this.rig.face.leftEye,
+      this.rig.face.rightEye,
+      this.rig.face.leftEyebrow,
+      this.rig.face.rightEyebrow,
+      this.rig.face.mouth,
+    ].filter(
       (g): g is RigFaceGroup => g !== null,
     );
 
@@ -255,7 +269,10 @@ export class RigRuntime {
     let dy = 0;
     let scaleY = 1;
 
-    if (lookTarget) {
+    const isEye = group.kind === "leftEye" || group.kind === "rightEye";
+    const isEyebrow = group.kind === "leftEyebrow" || group.kind === "rightEyebrow";
+    const isMouth = group.kind === "mouth";
+    if (lookTarget && isEye) {
       const groupWorld = this.localToWorld({ x: group.restX, y: group.restY });
       const wx = lookTarget.x - groupWorld.x;
       const wy = lookTarget.y - groupWorld.y;
@@ -267,10 +284,16 @@ export class RigRuntime {
       }
     }
 
-    const isEye = group === this.rig.face.leftEye || group === this.rig.face.rightEye;
-    const isMouth = group === this.rig.face.mouth;
     if (isEye && blink) {
       scaleY = 0.12;
+    }
+    if (isEyebrow) {
+      if (this.expression === "surprised") dy -= 5;
+      else if (this.expression === "happy") dy -= 2;
+      else if (this.expression === "sad") {
+        dy += 2;
+        dx += group.kind === "leftEyebrow" ? 2 : -2;
+      }
     }
     if (isMouth && this.talkActive) {
       scaleY = 1 + 0.35 * Math.abs(Math.sin(this.now() / 110));

@@ -17,6 +17,8 @@ export interface JointManifest {
 export interface FaceManifest {
   leftEye?: { x: number; y: number };
   rightEye?: { x: number; y: number };
+  leftEyebrow?: { x: number; y: number };
+  rightEyebrow?: { x: number; y: number };
   mouth?: { x: number; y: number };
 }
 
@@ -76,6 +78,18 @@ export function faceFromAnalysis(
     face.rightEye = {
       x: imageToWorldX(anchors.rightEye.x, mapping),
       y: imageToWorldY(anchors.rightEye.y, mapping),
+    };
+  }
+  if (anchors.leftEyebrow) {
+    face.leftEyebrow = {
+      x: imageToWorldX(anchors.leftEyebrow.x, mapping),
+      y: imageToWorldY(anchors.leftEyebrow.y, mapping),
+    };
+  }
+  if (anchors.rightEyebrow) {
+    face.rightEyebrow = {
+      x: imageToWorldX(anchors.rightEyebrow.x, mapping),
+      y: imageToWorldY(anchors.rightEyebrow.y, mapping),
     };
   }
   if (anchors.mouth) {

@@ -30,7 +30,7 @@ import { createSessionStorage } from "../storage/indexed-db.js";
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO } from "./constants.js";
 import { createDiagnostics } from "./diagnostics.js";
 import { PhaserWorldController } from "../world/phaser-world.js";
-import { REPAIR_PARTS, SegmentRepairEditor, type RepairPart } from "../character/segment-repair.js";
+import { REPAIR_PARTS, SegmentRepairEditor, partColor, type RepairPart } from "../character/segment-repair.js";
 import { WorldEntityRegistry, type WorldEntity } from "../world/world-entity.js";
 import type { PhysicsShape } from "../world/phaser-world.js";
 import { hasReviewableChanges } from "./manual-review.js";
@@ -106,6 +106,7 @@ let pencilDown = false;
 let bubbleTimer: number | null = null;
 let lastFrame = performance.now();
 let segmentRepair: SegmentRepairEditor | null = null;
+let physicsNavigationWasActive = false;
 
 function activateRig(rig: Rig, playSpawn = true): void {
   rigRuntime = new RigRuntime(rig);
@@ -175,7 +176,17 @@ function rebuildWorld(): void {
     pond = new PondScene(pondX, baselineY - 26, 190, 72);
     walker = new Walker(groundPath, pondX - 70);
   }
-  phaserWorld?.configureGround(w, baselineY);
+  configurePhysicsGround();
+}
+
+function configurePhysicsGround(): void {
+  const { viewportWidth: width, viewportHeight: height } = appState.get();
+  const worldEnd = Math.max(width * 3, 1);
+  phaserWorld?.configureGround(
+    width,
+    Math.round(height * BASE_LINE_Y_RATIO),
+    groundPath.solidRanges(0, worldEnd),
+  );
 }
 
 let groundPath = new GroundPath([{ x: 0, y: 0 }, { x: 1, y: 0 }]);
@@ -325,12 +336,20 @@ function jointsInImageCoords(): Array<{ id: string; x: number; y: number }> {
   };
   const result: Array<{ id: string; x: number; y: number }> = [];
   if (!rigRuntime) return result;
-  for (const id of ["left_foot", "right_foot", "left_hand", "right_hand"] as const) {
-    const world = rigRuntime.jointWorld(id);
+  const add = (id: string, world: { x: number; y: number } | null): void => {
     if (world) {
       const img = worldToImage(world, mapping);
       result.push({ id, x: img.x, y: img.y });
     }
+  };
+  for (const joint of rigRuntime.joints) add(joint.id, rigRuntime.jointWorld(joint.id));
+  // Fingers inherit the hand bone today, while eyebrows are expressive face
+  // groups. Exposing these semantic anchors lets the AI reason about them now
+  // without allowing it to invent unsupported low-level animation commands.
+  add("left_fingers", rigRuntime.jointWorld("left_hand"));
+  add("right_fingers", rigRuntime.jointWorld("right_hand"));
+  for (const feature of ["leftEyebrow", "rightEyebrow"] as const) {
+    add(feature, rigRuntime.faceAnchorWorld(feature));
   }
   return result;
 }
@@ -415,11 +434,20 @@ async function resolveDrawingAttempt(): Promise<void> {
 
 function playReactionMotion(emotion: string): void {
   const normalized = emotion.toLowerCase();
-  if (/sad|worried|uncomfortable|غم|ناراحت/.test(normalized)) animController.playById("sad");
-  else if (/happy|excited|joy|خوشحال|هیجان/.test(normalized)) animController.playById("happy");
-  else if (/surpris|شگفت|تعجب/.test(normalized)) animController.playById("spawn");
-  else if (/confus|think|curious|فکر|گیج/.test(normalized)) animController.playById("confused");
-  else animController.playById("talk");
+  if (/sad|worried|uncomfortable|غم|ناراحت/.test(normalized)) {
+    rigRuntime!.expression = "sad";
+    animController.playById("sad");
+  } else if (/happy|excited|joy|خوشحال|هیجان/.test(normalized)) {
+    rigRuntime!.expression = "happy";
+    animController.playById("happy");
+  } else if (/surpris|شگفت|تعجب/.test(normalized)) {
+    rigRuntime!.expression = "surprised";
+    animController.playById("spawn");
+  } else {
+    rigRuntime!.expression = "neutral";
+    if (/confus|think|curious|فکر|گیج/.test(normalized)) animController.playById("confused");
+    else animController.playById("talk");
+  }
 }
 
 function inferredPhysicsShape(object: DrawingAnalysis["objects"][number]): PhysicsShape | null {
@@ -482,12 +510,13 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
     case "move": {
       const root = rigRuntime.jointWorld("root");
       const direction = action.direction === "left" ? -1 : action.direction === "right" ? 1 : target && root && target.bounds.x < root.x ? -1 : 1;
-      phaserWorld?.moveCharacter(direction);
+      const needsClimb = target?.physicsShape === "stairs" || target?.physicsShape === "slope";
+      const targetX = target
+        ? target.bounds.x + (needsClimb ? (direction > 0 ? target.bounds.width + 16 : -16) : target.bounds.width / 2)
+        : (root?.x ?? 0) + direction * Math.max(140, Math.min(320, action.durationMs * 0.18));
+      if (needsClimb) phaserWorld?.climbTo(targetX);
+      else phaserWorld?.walkTo(targetX);
       animController.playById("walk");
-      window.setTimeout(() => {
-        phaserWorld?.moveCharacter(0);
-        animController.playById("idle");
-      }, action.durationMs);
       return true;
     }
     case "jump":
@@ -497,10 +526,11 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
     case "climb": {
       const root = rigRuntime.jointWorld("root");
       const direction = target && root && target.bounds.x < root.x ? -1 : 1;
-      phaserWorld?.moveCharacter(direction, 2.7);
-      phaserWorld?.jump(7.5);
+      const targetX = target
+        ? target.bounds.x + (direction > 0 ? target.bounds.width + 16 : -16)
+        : (root?.x ?? 0) + direction * 180;
+      phaserWorld?.climbTo(targetX);
       animController.playById("walk");
-      window.setTimeout(() => phaserWorld?.moveCharacter(0), action.durationMs);
       return true;
     }
     case "equip":
@@ -869,14 +899,16 @@ repairPaletteEl.style.cssText = [
   "background:rgba(5,24,30,.9)", "direction:rtl",
 ].join(";");
 const repairLabels: Record<RepairPart, string> = {
-  head: "سر", torso: "بدن", left_arm: "دست چپ", right_arm: "دست راست",
-  left_leg: "پای چپ", right_leg: "پای راست",
+  head: "سر", torso: "بدن", left_arm: "بازوی چپ", right_arm: "بازوی راست",
+  left_hand: "دست چپ", right_hand: "دست راست", left_fingers: "انگشت‌های چپ", right_fingers: "انگشت‌های راست",
+  left_leg: "پای چپ", right_leg: "پای راست", left_foot: "کف پای چپ", right_foot: "کف پای راست",
+  left_eyebrow: "ابروی چپ", right_eyebrow: "ابروی راست",
 };
 const repairPartButtons = new Map<RepairPart, HTMLButtonElement>();
 for (const part of REPAIR_PARTS) {
   const button = document.createElement("button");
   button.textContent = repairLabels[part];
-  button.style.cssText = "min-height:44px;padding:8px 12px;border-radius:12px;border:1px solid #D8F6FF;background:#103B46;color:#F7F5EE;font:14px system-ui;touch-action:manipulation";
+  button.style.cssText = `min-height:44px;padding:8px 12px;border-radius:12px;border:3px solid ${partColor(part)};background:#103B46;color:#F7F5EE;font:14px system-ui;touch-action:manipulation`;
   button.addEventListener("click", () => {
     segmentRepair?.setPart(part);
     repairPartButtons.forEach((item, key) => {
@@ -1069,6 +1101,7 @@ const pointer = new PointerInput(canvas, store, camera, {
   onEraserMove: (point) => {
     if (!rigRuntime || !groundPath.eraseNear(point, 26)) return;
     groundChangePending = true;
+    configurePhysicsGround();
     diagnostics.info("ground_erased", { x: Math.round(point.x) });
     scheduleSave();
     refreshReviewControls();
@@ -1084,6 +1117,10 @@ function setInkTool(tool: "pen" | "eraser"): void {
 }
 
 undoEl.addEventListener("click", () => {
+  if (appState.get().mode === "segmenting" && segmentRepair) {
+    if (segmentRepair.undo()) diagnostics.info("body_part_correction_undone");
+    return;
+  }
   if (!canEditInk()) return;
   const undone = store.undo();
   if (!undone) return;
@@ -1182,6 +1219,26 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       phaserWorld?.setCameraX(camera.state.x);
     } else {
       phaserWorld?.syncCharacter(rigRuntime);
+      if (phaserWorld?.isNavigating) {
+        physicsNavigationWasActive = true;
+        const root = rigRuntime.jointWorld("root");
+        if (root && root.x - camera.state.x > w * 0.58) {
+          camera.setX(easeToward(camera.state.x, root.x - w * 0.38, dt));
+          phaserWorld.setCameraX(camera.state.x);
+        }
+      } else if (physicsNavigationWasActive) {
+        physicsNavigationWasActive = false;
+        if (animController.currentId === "walk") animController.playById("idle");
+      }
+    }
+
+    const physicsMotion = phaserWorld?.motionState();
+    if (physicsMotion === "falling" && animController.currentId !== "fall") {
+      rigRuntime.expression = "surprised";
+      animController.playById("fall");
+    } else if (physicsMotion === "grounded" && animController.currentId === "fall") {
+      rigRuntime.expression = "neutral";
+      animController.playById("idle");
     }
 
     const pose = animController.update(now);
@@ -1277,8 +1334,7 @@ phaserWorld = new PhaserWorldController(
   {
     render: (now, _context, resolution) => renderFrame(now, resolution),
     ready: () => {
-      const { viewportWidth: width, viewportHeight: height } = appState.get();
-      phaserWorld?.configureGround(width, Math.round(height * BASE_LINE_Y_RATIO));
+      configurePhysicsGround();
       if (rigRuntime) phaserWorld?.attachCharacter(rigRuntime);
     },
   },

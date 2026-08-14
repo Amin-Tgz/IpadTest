@@ -44,6 +44,8 @@ export const characterAnalysisSchema = z.object({
       .object({
         leftEye: pointSchema.optional(),
         rightEye: pointSchema.optional(),
+        leftEyebrow: pointSchema.optional(),
+        rightEyebrow: pointSchema.optional(),
         mouth: pointSchema.optional(),
       })
       .default({}),
@@ -85,7 +87,7 @@ export function sanitizeCharacterAnalysis(
     ]) as [number, number][];
     region.confidence = clampConfidence(region.confidence);
   }
-  for (const key of ["leftEye", "rightEye", "mouth"] as const) {
+  for (const key of ["leftEye", "rightEye", "leftEyebrow", "rightEyebrow", "mouth"] as const) {
     const anchor = parsed.character.face[key];
     if (anchor) {
       anchor.x = clampCoord(anchor.x, width);

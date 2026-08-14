@@ -22,6 +22,8 @@ interface JointWorld {
 interface FaceWorld {
   leftEye?: { x: number; y: number };
   rightEye?: { x: number; y: number };
+  leftEyebrow?: { x: number; y: number };
+  rightEyebrow?: { x: number; y: number };
   mouth?: { x: number; y: number };
 }
 
@@ -123,6 +125,12 @@ export class AnalysisSpike {
       rightEye: analysis.character.face.rightEye
         ? { x: imageToWorldX(analysis.character.face.rightEye.x, mapping), y: imageToWorldY(analysis.character.face.rightEye.y, mapping) }
         : undefined,
+      leftEyebrow: analysis.character.face.leftEyebrow
+        ? { x: imageToWorldX(analysis.character.face.leftEyebrow.x, mapping), y: imageToWorldY(analysis.character.face.leftEyebrow.y, mapping) }
+        : undefined,
+      rightEyebrow: analysis.character.face.rightEyebrow
+        ? { x: imageToWorldX(analysis.character.face.rightEyebrow.x, mapping), y: imageToWorldY(analysis.character.face.rightEyebrow.y, mapping) }
+        : undefined,
       mouth: analysis.character.face.mouth
         ? { x: imageToWorldX(analysis.character.face.mouth.x, mapping), y: imageToWorldY(analysis.character.face.mouth.y, mapping) }
         : undefined,
@@ -182,6 +190,8 @@ export class AnalysisSpike {
     };
     cross(this.faceWorld.leftEye, PALETTE.activeInk);
     cross(this.faceWorld.rightEye, PALETTE.activeInk);
+    cross(this.faceWorld.leftEyebrow, PALETTE.warning);
+    cross(this.faceWorld.rightEyebrow, PALETTE.warning);
     cross(this.faceWorld.mouth, PALETTE.warning);
 
     ctx.restore();
