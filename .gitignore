@@ -11,3 +11,5 @@ server/**/*.js
 server/**/*.d.ts
 tests/**/*.js
 tests/**/*.d.ts
+src/**/*.js
+src/**/*.d.ts
