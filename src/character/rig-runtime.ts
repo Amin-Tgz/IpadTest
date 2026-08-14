@@ -28,6 +28,7 @@ export type FaceExpression = "neutral" | "happy" | "sad" | "surprised";
 const LOOK_MAX_OFFSET = 7;
 const BLINK_INTERVAL_MS = 3200;
 const BLINK_DURATION_MS = 140;
+const FACE_DEFORM_RADIUS = 14;
 
 function degToRad(deg: number): number {
   return (deg * Math.PI) / 180;
@@ -291,9 +292,10 @@ export class RigRuntime {
         const groupWorld = this.localToWorld({ x: group.restX, y: group.restY });
         const relX = transformed.x - groupWorld.x;
         const relY = transformed.y - groupWorld.y;
+        const normalizedX = Math.max(-1, Math.min(1, relX / FACE_DEFORM_RADIUS));
         return {
-          x: groupWorld.x + relX + offset.dx,
-          y: groupWorld.y + relY * offset.scaleY + offset.dy,
+          x: groupWorld.x + relX * offset.scaleX + offset.dx,
+          y: groupWorld.y + relY * offset.scaleY + offset.dy + offset.curveY * (1 - normalizedX * normalizedX),
         };
       }),
     );
@@ -303,10 +305,12 @@ export class RigRuntime {
     group: RigFaceGroup,
     lookTarget: { x: number; y: number } | null,
     blink: boolean,
-  ): { dx: number; dy: number; scaleY: number } {
+  ): { dx: number; dy: number; scaleX: number; scaleY: number; curveY: number } {
     let dx = 0;
     let dy = 0;
+    let scaleX = 1;
     let scaleY = 1;
+    let curveY = 0;
 
     const isEye = group.kind === "leftEye" || group.kind === "rightEye";
     const isEyebrow = group.kind === "leftEyebrow" || group.kind === "rightEyebrow";
@@ -335,10 +339,25 @@ export class RigRuntime {
       }
     }
     if (isMouth && this.talkActive) {
-      scaleY = 1 + 0.35 * Math.abs(Math.sin(this.now() / 110));
+      const mouthShape = Math.floor(this.now() / 115) % 3;
+      if (mouthShape === 0) {
+        scaleX = 0.58;
+        scaleY = 1.65;
+      } else if (mouthShape === 1) {
+        scaleX = 1.16;
+        scaleY = 0.72;
+        curveY = 3.2;
+      } else {
+        scaleX = 0.82;
+        scaleY = 1.2;
+      }
+    } else if (isMouth && this.expression === "happy") {
+      scaleX = 1.12;
+      scaleY = 0.78;
+      curveY = 3.5;
     }
 
-    return { dx, dy, scaleY };
+    return { dx, dy, scaleX, scaleY, curveY };
   }
 
   private localToWorld(point: { x: number; y: number }): { x: number; y: number } {

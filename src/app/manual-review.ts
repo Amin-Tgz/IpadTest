@@ -16,3 +16,13 @@ export function hasReviewableChanges(
 export function nextReviewCheckpoint(current: number, strokeCount: number, reset: boolean): number {
   return reset ? strokeCount : current;
 }
+
+export function temporaryReviewStrokeIds(
+  strokes: Array<ReviewableStroke & { id: string }>,
+  sourceStrokeIds: ReadonlySet<string>,
+  retainedStrokeIds: ReadonlySet<string>,
+): string[] {
+  return strokes
+    .filter((stroke) => sourceStrokeIds.has(stroke.id) && stroke.active && stroke.entityId === null && !retainedStrokeIds.has(stroke.id))
+    .map((stroke) => stroke.id);
+}

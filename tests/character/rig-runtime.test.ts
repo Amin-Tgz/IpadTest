@@ -193,4 +193,32 @@ describe("RigRuntime forward kinematics", () => {
     runtime.update(clock);
     expect(measure()).toBeGreaterThan(before * 0.95);
   });
+
+  it("cycles the mouth between open and smiling shapes while speech is active", () => {
+    const store = new StrokeStore();
+    store.add({
+      id: "mouth",
+      points: [
+        { x: 92, y: 112, pressure: 0.5, time: 0 },
+        { x: 100, y: 112, pressure: 0.5, time: 1 },
+        { x: 108, y: 112, pressure: 0.5, time: 2 },
+      ],
+      color: "#F7F5EE", baseWidth: 4, tool: "pen", createdAt: 0,
+      worldSpace: true, entityId: null, active: true, groupId: null,
+    });
+    const mouthManifest: CharacterManifest = {
+      ...manifest,
+      joints: [...manifest.joints, { id: "head", x: 100, y: 100, parent: "root", confidence: 1 }],
+      includedStrokeIds: ["mouth"],
+      face: { mouth: { x: 100, y: 112 } },
+    };
+    let clock = 0;
+    const runtime = new RigRuntime(buildRig(mouthManifest, store), () => clock);
+    runtime.talkActive = true;
+    const open = runtime.transformedStrokePoints()[0];
+    clock = 115;
+    const smile = runtime.transformedStrokePoints()[0];
+    expect(smile.at(-1)!.x - smile[0].x).toBeGreaterThan(open.at(-1)!.x - open[0].x);
+    expect(smile[1].y).toBeGreaterThan(open[1].y);
+  });
 });

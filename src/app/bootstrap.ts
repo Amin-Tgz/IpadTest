@@ -6,6 +6,7 @@ import { IdMap } from "../drawing/id-map.js";
 import { Camera } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { SpeechBubble } from "../story/speech-bubble.js";
+import { PersianSpeech } from "../story/persian-speech.js";
 import { buildSampleCharacter, buildSampleManifest } from "./sample-character.js";
 import { AnalysisSpike } from "../character/analysis-spike.js";
 import { JointEditor } from "../character/joint-editor.js";
@@ -33,7 +34,7 @@ import { PhaserWorldController } from "../world/phaser-world.js";
 import { REPAIR_PARTS, SegmentRepairEditor, partColor, type RepairPart } from "../character/segment-repair.js";
 import { WorldEntityRegistry, type WorldEntity } from "../world/world-entity.js";
 import type { PhysicsShape } from "../world/phaser-world.js";
-import { hasReviewableChanges, nextReviewCheckpoint } from "./manual-review.js";
+import { hasReviewableChanges, nextReviewCheckpoint, temporaryReviewStrokeIds } from "./manual-review.js";
 import { validateActionRequest } from "../ai/action-protocol.js";
 
 const appEl = (() => {
@@ -73,6 +74,7 @@ const store = new StrokeStore();
 const camera = new Camera();
 const renderer = new StrokeRenderer();
 const bubble = new SpeechBubble(appEl);
+const speech = new PersianSpeech();
 const idMap = new IdMap();
 const storage = createSessionStorage();
 const worldEntities = new WorldEntityRegistry();
@@ -125,14 +127,14 @@ function activateRig(rig: Rig, playSpawn = true): void {
         startFreePlay(false);
       } else if (!greeted) {
         greeted = true;
-        bubble.show("سلام! پس این تو همونی هستی…", headAnchorScreen());
+        speakStoryText("سلام! پس این تو همونی هستی…");
       }
     }
   };
 }
 
 function startFreePlay(resetCheckpoint = true): void {
-  showStoryBubble("هر چیزی دوست داری بکش یا بنویس؛ من واکنش نشان می‌دهم.");
+  speakStoryText("هر چیزی دوست داری بکش یا بنویس؛ من واکنش نشان می‌دهم.");
   beginAwaitingDrawing("free_draw", resetCheckpoint);
 }
 
@@ -308,16 +310,23 @@ function headAnchorScreen(): { x: number; y: number } {
   return head ? { x: head.x, y: head.y - 60 } : { x: w * 0.5, y: h * 0.4 };
 }
 
-function showStoryBubble(text: string): void {
+function speakStoryText(text: string): void {
   if (bubbleTimer !== null) window.clearTimeout(bubbleTimer);
-  bubble.show(text, headAnchorScreen());
+  bubble.hide();
+  speech.stop();
   if (rigRuntime) rigRuntime.talkActive = true;
-  bubbleTimer = window.setTimeout(() => {
+  const finish = (): void => {
+    if (bubbleTimer !== null) window.clearTimeout(bubbleTimer);
     bubbleTimer = null;
-    bubble.hide();
     if (rigRuntime) rigRuntime.talkActive = false;
     quest.trigger({ type: "bubble_shown" });
-  }, 2600);
+  };
+  const spoken = speech.speak(text, finish);
+  diagnostics.info("persian_speech", { spoken, textLength: text.length });
+  if (!spoken) {
+    const duration = Math.max(1600, Math.min(6500, text.length * 95));
+    bubbleTimer = window.setTimeout(finish, duration);
+  }
 }
 
 function beginAwaitingDrawing(goalId: string, resetCheckpoint = true): void {
@@ -401,12 +410,14 @@ async function resolveDrawingAttempt(): Promise<void> {
     if (analysis.recognized || analysis.mappedAction === "ground_erased") {
       succeeded = true;
       pendingDetected = analysis;
-      pendingSourceStrokeIds = new Set(newStrokes.map((stroke) => stroke.id));
+      const reviewSourceStrokeIds = new Set(newStrokes.map((stroke) => stroke.id));
+      pendingSourceStrokeIds = new Set(reviewSourceStrokeIds);
       lastFullMapping = full.mapping;
-      const entityIds = registerWorldObjects(analysis, full.mapping, pendingSourceStrokeIds);
+      const registered = registerWorldObjects(analysis, full.mapping, reviewSourceStrokeIds);
       equipDetectedObjects(analysis, full.mapping);
-      if (!executeAIAction(analysis.action ?? null, entityIds)) playReactionMotion(analysis.reaction.emotion);
-      showStoryBubble(
+      if (!executeAIAction(analysis.action ?? null, registered.entityIds)) playReactionMotion(analysis.reaction.emotion);
+      clearTemporaryReviewInk(reviewSourceStrokeIds, registered.retainedStrokeIds);
+      speakStoryText(
         looksPersian(analysis.reaction.bubble)
           ? analysis.reaction.bubble
           : "دیدمش! بگذار ببینم با آن چه کار می‌شود کرد…",
@@ -415,13 +426,13 @@ async function resolveDrawingAttempt(): Promise<void> {
       beginAwaitingDrawing("free_draw", true);
       diagnostics.info("drawing_analysis_succeeded", { goalId, objects: analysis.objects.length, action: analysis.mappedAction });
     } else {
-      showStoryBubble(looksPersian(analysis.reaction.bubble) ? analysis.reaction.bubble : "این یکی را نفهمیدم؛ یک نشانهٔ دیگر به آن اضافه کن.");
+      speakStoryText(looksPersian(analysis.reaction.bubble) ? analysis.reaction.bubble : "این یکی را نفهمیدم؛ یک نشانهٔ دیگر به آن اضافه کن.");
       beginAwaitingDrawing("free_draw", false);
       diagnostics.info("drawing_analysis_rejected", { goalId, interpretation: analysis.interpretation });
     }
   } catch (error) {
     diagnostics.error("drawing_analysis_failed", error);
-    bubble.show("هوم… این یکی رو نفهمیدم. یه بار دیگه؟", headAnchorScreen());
+    speakStoryText("هوم… این یکی رو نفهمیدم. یه بار دیگه؟");
     beginAwaitingDrawing("free_draw", false);
     window.setTimeout(() => {
       if (bubble.isVisible()) bubble.hide();
@@ -468,8 +479,9 @@ function registerWorldObjects(
   analysis: DrawingAnalysis,
   mapping: CaptureMapping,
   sourceStrokeIds: ReadonlySet<string>,
-): string[] {
-  return analysis.objects.map((object, index) => {
+): { entityIds: string[]; retainedStrokeIds: Set<string> } {
+  const retainedStrokeIds = new Set<string>();
+  const entityIds = analysis.objects.map((object, index) => {
     const id = `world_${Date.now().toString(36)}_${index}`;
     const bounds = {
       x: imageToWorldX(object.boundingBox.x, mapping),
@@ -478,10 +490,18 @@ function registerWorldObjects(
       height: object.boundingBox.height / mapping.scale,
     };
     const physicsShape = inferredPhysicsShape(object);
+    const objectStrokeIds = store.all()
+      .filter((stroke) => sourceStrokeIds.has(stroke.id) && stroke.active && stroke.points.some((point) =>
+        point.x >= bounds.x - 12 && point.x <= bounds.x + bounds.width + 12 &&
+        point.y >= bounds.y - 12 && point.y <= bounds.y + bounds.height + 12,
+      ))
+      .map((stroke) => stroke.id);
+    const remainsInWorld = physicsShape !== null || object.category === "wearable" || object.category === "held_tool";
+    if (remainsInWorld) objectStrokeIds.forEach((id) => retainedStrokeIds.add(id));
     worldEntities.upsert({
       id,
       type: object.type,
-      sourceStrokeIds: [...sourceStrokeIds],
+      sourceStrokeIds: objectStrokeIds,
       bounds,
       affordances: object.affordances,
       physicsShape,
@@ -496,6 +516,14 @@ function registerWorldObjects(
     }
     return id;
   });
+  return { entityIds, retainedStrokeIds };
+}
+
+function clearTemporaryReviewInk(sourceStrokeIds: ReadonlySet<string>, retainedStrokeIds: ReadonlySet<string>): void {
+  const removed = temporaryReviewStrokeIds(store.all(), sourceStrokeIds, retainedStrokeIds);
+  removed.forEach((id) => store.deactivate(id));
+  diagnostics.info("temporary_review_ink_cleared", { removedCount: removed.length, retainedCount: retainedStrokeIds.size });
+  if (removed.length > 0) scheduleSave();
 }
 
 function executeAIAction(action: AIActionRequest | null, entityIds: string[]): boolean {
@@ -633,7 +661,7 @@ function castSequence(): void {
 quest.onCommand = (command: StoryCommand) => {
   switch (command.type) {
     case "bubble":
-      showStoryBubble(command.text);
+      speakStoryText(command.text);
       break;
     case "anim":
       animController.playById(command.clip);
@@ -668,7 +696,7 @@ quest.onCommand = (command: StoryCommand) => {
       pond?.triggerFishJump(performance.now());
       break;
     case "fish_talk":
-      showStoryBubble(command.text);
+      speakStoryText(command.text);
       break;
     case "ending":
       showEnding();
@@ -1016,7 +1044,7 @@ function startAnalysis(includeSample: boolean): void {
 function finalizeCharacter(): void {
   const manifest = editor.manifestReady();
   if (!manifest) {
-    bubble.show("مفصل‌ها هنوز یک پیکر درست نیستن…", headAnchorScreen());
+    speakStoryText("مفصل‌ها هنوز یک پیکر درست نیستن…");
     return;
   }
   appState.setMode("live");
@@ -1028,7 +1056,7 @@ function finalizeCharacter(): void {
   beginAwaitingDrawing("free_draw");
   if (storage) void storage.saveManifest(manifest);
   console.log("[pencil-ai] character manifest:", JSON.stringify(manifest, null, 2));
-  bubble.show("آها! پس تو این شکلی…", headAnchorScreen());
+  speakStoryText("آها! پس تو این شکلی…");
 }
 
 reviveEl.addEventListener("click", () => startAnalysis(false));
@@ -1114,6 +1142,8 @@ const pointer = new PointerInput(canvas, store, camera, {
         quest.trigger({ type: "bubble_shown" });
       }
     }
+    speech.stop();
+    if (rigRuntime) rigRuntime.talkActive = false;
   },
   onStrokeEnd: (stroke) => {
     pencilDown = false;
