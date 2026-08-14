@@ -62,6 +62,17 @@ export class RigRuntime {
     return joint ? { x: joint.restX, y: joint.restY } : null;
   }
 
+  boneToWorld(boneId: JointId, local: { x: number; y: number }): { x: number; y: number } {
+    const pos = this.fkPosition(boneId, new Map());
+    const rotation = degToRad(this.accumulatedRotation(boneId, new Map()));
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    return {
+      x: pos.x + local.x * cos - local.y * sin,
+      y: pos.y + local.x * sin + local.y * cos,
+    };
+  }
+
   applyPose(pose: RigPose): void {
     this.pose = pose;
   }

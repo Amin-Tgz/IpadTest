@@ -14,11 +14,23 @@ import { buildRig, type Rig } from "../character/rig-builder.js";
 import { RigRuntime } from "../character/rig-runtime.js";
 import { AnimationController } from "../animation/animation-controller.js";
 import { MOTION_CLIPS } from "../animation/motion-clips.js";
+import { QuestEngine, type StoryCommand } from "../story/quest-engine.js";
+import { PondScene } from "../world/pond-scene.js";
+import { Walker, easeToward } from "../world/walker.js";
+import {
+  buildShoeAttachment,
+  buildRodAttachment,
+  buildFishLineAttachment,
+} from "../world/hardcoded-objects.js";
+import type { Attachment } from "../character/attachments.js";
 import { createSessionStorage } from "../storage/indexed-db.js";
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO, INACTIVITY_MS } from "./constants.js";
 
-const appEl = document.getElementById("app");
-if (!appEl) throw new Error("missing #app element");
+const appEl = (() => {
+  const el = document.getElementById("app");
+  if (!el) throw new Error("missing #app element");
+  return el;
+})();
 
 function getContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
   const ctx = canvas.getContext("2d");
@@ -44,13 +56,24 @@ const getViewport = () => {
 };
 
 const editor = new JointEditor(store, getViewport);
-
 const spike = new AnalysisSpike(store, camera, getViewport, () => groundPath, bubble);
-
 const animController = new AnimationController();
+const quest = new QuestEngine();
+
 let rigRuntime: RigRuntime | null = null;
 let riggedStrokeIds = new Set<string>();
 let greeted = false;
+let storyStarted = false;
+let attachments: Attachment[] = [];
+let pond: PondScene | null = null;
+let walker: Walker | null = null;
+let walking = false;
+let awaitingGoalId: string | null = null;
+let lastPencil: PencilEvent | null = null;
+let pencilDown = false;
+let idleTimer: number | null = null;
+let bubbleTimer: number | null = null;
+let lastFrame = performance.now();
 
 function activateRig(rig: Rig): void {
   rigRuntime = new RigRuntime(rig);
@@ -59,7 +82,10 @@ function activateRig(rig: Rig): void {
   animController.onClipEnd = (clipId) => {
     if (clipId === "spawn") {
       animController.playById("idle");
-      if (!greeted) {
+      if (!storyStarted) {
+        storyStarted = true;
+        startStory();
+      } else if (!greeted) {
         greeted = true;
         bubble.show("سلام! پس این تو همونی هستی…", headAnchorScreen());
       }
@@ -67,8 +93,14 @@ function activateRig(rig: Rig): void {
   };
 }
 
+function startStory(): void {
+  appState.setMode("live");
+  quest.trigger({ type: "character_alive" });
+}
+
 function replaceCharacter(manifest: CharacterManifest, deactivateSample: boolean): void {
   activateRig(buildRig(manifest, store));
+  attachments = [];
   if (deactivateSample) {
     for (const stroke of store.all()) {
       if (stroke.entityId === "sample_character") {
@@ -99,19 +131,176 @@ function rebuildWorld(): void {
     { x: 0, y: baselineY },
     { x: w * 3, y: baselineY },
   ]);
-  if (!sampleBuilt) {
-    sampleBuilt = true;
+  if (!worldBuilt) {
+    worldBuilt = true;
     buildSampleCharacter(store, w * 0.34, baselineY);
     replaceCharacter(buildSampleManifest(store, w * 0.34, baselineY), false);
+    const pondX = Math.round(w * 1.45);
+    pond = new PondScene(pondX, baselineY - 26, 190, 72);
+    walker = new Walker(groundPath, pondX - 70);
   }
 }
 
 let groundPath = new GroundPath([{ x: 0, y: 0 }, { x: 1, y: 0 }]);
-let sampleBuilt = false;
+let worldBuilt = false;
 
-let lastPencil: PencilEvent | null = null;
-let pencilDown = false;
-let idleTimer: number | null = null;
+function headAnchorScreen(): { x: number; y: number } {
+  const { viewportWidth: w, viewportHeight: h } = appState.get();
+  const root = rigRuntime?.restJoint("head") ?? { x: w * 0.34, y: h * 0.4 };
+  return camera.worldToScreen({ x: root.x, y: root.y - 60 });
+}
+
+function showStoryBubble(text: string): void {
+  if (bubbleTimer !== null) window.clearTimeout(bubbleTimer);
+  bubble.show(text, headAnchorScreen());
+  bubbleTimer = window.setTimeout(() => {
+    bubbleTimer = null;
+    bubble.hide();
+    quest.trigger({ type: "bubble_shown" });
+  }, 2600);
+}
+
+function beginAwaitingDrawing(goalId: string): void {
+  awaitingGoalId = goalId;
+  appState.setMode("awaiting");
+}
+
+function resolveDrawingAttempt(): void {
+  if (awaitingGoalId === "draw_shoes") {
+    awaitingGoalId = null;
+    quest.trigger({
+      type: "drawing_validated",
+      action: "equip_shoes",
+      reactionBubble: "وای! یکم بزرگن، ولی عاشقشونم!",
+      emotion: "excited",
+    });
+  } else if (awaitingGoalId === "draw_fishing_tool") {
+    awaitingGoalId = null;
+    quest.trigger({
+      type: "drawing_validated",
+      action: "equip_tool",
+      reactionBubble: "عالیه! حالا ببین چطور ماهی می‌گیرم!",
+      emotion: "excited",
+    });
+  }
+}
+
+function attachHardcodedShoes(): void {
+  if (!rigRuntime) return;
+  const leftFoot = rigRuntime.restJoint("left_foot");
+  const rightFoot = rigRuntime.restJoint("right_foot");
+  if (leftFoot) attachments.push(buildShoeAttachment(leftFoot, "left_foot", "left"));
+  if (rightFoot) attachments.push(buildShoeAttachment(rightFoot, "right_foot", "right"));
+}
+
+function attachHardcodedRod(): void {
+  if (!rigRuntime) return;
+  const hand = rigRuntime.restJoint("right_hand");
+  if (hand) {
+    attachments = attachments.filter((a) => a.id !== "rod");
+    attachments.push(buildRodAttachment(hand));
+  }
+}
+
+function startWalk(): void {
+  if (!walker || !rigRuntime) return;
+  const root = rigRuntime.restJoint("root");
+  if (root) {
+    walker.distance = groundPath.nearestDistance({ x: root.x, y: root.y });
+  }
+  walking = true;
+  appState.setMode("walking");
+  animController.playById("walk");
+}
+
+function castSequence(): void {
+  animController.playById("cast_rod");
+  window.setTimeout(() => {
+    if (!pond || !rigRuntime) return;
+    const hand = rigRuntime.restJoint("right_hand");
+    if (hand) {
+      const tip = rigRuntime.boneToWorld("right_hand", { x: 164, y: -12 });
+      attachments = attachments.filter((a) => a.id !== "fish_line");
+      attachments.push(buildFishLineAttachment(hand, { x: pond.x, y: pond.y - 20 }));
+      void tip;
+    }
+    pond.triggerFishJump(performance.now());
+  }, 700);
+  animController.onClipEnd = (clipId) => {
+    if (clipId === "cast_rod") {
+      animController.playById("pull_fish");
+      animController.onClipEnd = (innerId) => {
+        if (innerId === "pull_fish") {
+          quest.trigger({ type: "fish_sequence_done" });
+        }
+      };
+    }
+  };
+}
+
+quest.onCommand = (command: StoryCommand) => {
+  switch (command.type) {
+    case "bubble":
+      showStoryBubble(command.text);
+      break;
+    case "anim":
+      animController.playById(command.clip);
+      break;
+    case "await_drawing":
+      beginAwaitingDrawing(command.goalId);
+      break;
+    case "attach_shoes":
+      attachHardcodedShoes();
+      break;
+    case "start_walk":
+      startWalk();
+      break;
+    case "reach_pond":
+      walking = false;
+      animController.playById("stop_at_pond");
+      if (rigRuntime && pond) {
+        rigRuntime.look = { targetX: pond.x, targetY: pond.y + 30 };
+      }
+      break;
+    case "attach_rod":
+      attachHardcodedRod();
+      break;
+    case "cast_sequence":
+      castSequence();
+      break;
+    case "fish_jump":
+      pond?.triggerFishJump(performance.now());
+      break;
+    case "fish_talk":
+      showStoryBubble(command.text);
+      break;
+    case "ending":
+      showEnding();
+      break;
+  }
+};
+
+function showEnding(): void {
+  appState.setMode("ending");
+  const el = document.createElement("div");
+  el.style.cssText = [
+    "position:absolute",
+    "z-index:50",
+    "inset:0",
+    "display:grid",
+    "place-items:center",
+    "background:rgba(16,59,70,0.55)",
+    "color:#F7F5EE",
+    "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
+    "font-size:24px",
+    "direction:rtl",
+    "text-align:center",
+    "line-height:1.8",
+    "animation:fadeIn 700ms ease",
+  ].join(";");
+  el.textContent = "ادامهٔ این خط را تو می‌کشی.";
+  appEl.appendChild(el);
+}
 
 function hideRevive(): void {
   reviveEl.style.opacity = "0";
@@ -281,11 +470,6 @@ function finalizeCharacter(): void {
   bubble.show("آها! پس تو این شکلی…", headAnchorScreen());
 }
 
-function headAnchorScreen(): { x: number; y: number } {
-  const { viewportWidth: w, viewportHeight: h } = appState.get();
-  return camera.worldToScreen({ x: w * 0.34, y: h * BASE_LINE_Y_RATIO - 200 });
-}
-
 reviveEl.addEventListener("click", () => startAnalysis(false));
 sampleDemoEl.addEventListener("click", () => startAnalysis(true));
 stageButton.addEventListener("click", () => {
@@ -305,19 +489,18 @@ function scheduleIdleAction(): void {
   if (idleTimer !== null) window.clearTimeout(idleTimer);
   idleTimer = window.setTimeout(() => {
     idleTimer = null;
+    const mode = appState.get().mode;
+    if (mode === "awaiting") {
+      resolveDrawingAttempt();
+      return;
+    }
+    if (mode !== "intro") return;
     if (spike.status === "analyzing") return;
     if (spike.userHasDrawn() && spike.status !== "done") {
       reviveEl.style.opacity = "1";
       reviveEl.style.pointerEvents = "auto";
       return;
     }
-    if (appState.get().mode !== "intro") return;
-    bubble.show("این خط برای پای برهنه‌ام خیلی زبره…", headAnchorScreen());
-    window.setTimeout(() => {
-      if (bubble.isVisible()) {
-        bubble.show("می‌تونی برام کفش بکشی؟", headAnchorScreen());
-      }
-    }, 3400);
   }, INACTIVITY_MS);
 }
 
@@ -328,16 +511,23 @@ const pointer = new PointerInput(canvas, store, camera, {
     hintVisible = false;
     hideRevive();
     hideSampleDemo();
-    if (bubble.isVisible()) bubble.hide();
+    if (bubble.isVisible()) {
+      bubble.hide();
+      if (bubbleTimer !== null) {
+        window.clearTimeout(bubbleTimer);
+        bubbleTimer = null;
+        quest.trigger({ type: "bubble_shown" });
+      }
+    }
     if (idleTimer !== null) window.clearTimeout(idleTimer);
   },
   onStrokeEnd: () => {
     pencilDown = false;
-    if (appState.get().mode === "intro") scheduleIdleAction();
+    scheduleIdleAction();
   },
   onPencilMove: (e) => {
     lastPencil = e;
-    if (rigRuntime && appState.get().mode === "live") {
+    if (rigRuntime && (appState.get().mode === "live" || appState.get().mode === "awaiting")) {
       rigRuntime.look = { targetX: e.x, targetY: e.y };
     }
   },
@@ -364,6 +554,8 @@ pointer.interceptor = {
 
 function renderFrame(now: number): void {
   const { viewportWidth: w, viewportHeight: h } = appState.get();
+  const dt = Math.min(64, now - lastFrame);
+  lastFrame = now;
 
   ctx.fillStyle = PALETTE.background;
   ctx.fillRect(0, 0, w, h);
@@ -376,6 +568,8 @@ function renderFrame(now: number): void {
   poly.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
   ctx.stroke();
 
+  pond?.draw(ctx, camera, now);
+
   for (const stroke of store.all()) {
     if (stroke.active && !riggedStrokeIds.has(stroke.id)) {
       renderer.drawStroke(ctx, stroke, camera);
@@ -383,13 +577,29 @@ function renderFrame(now: number): void {
   }
 
   if (rigRuntime) {
+    let rootDeltaX = 0;
+    if (walking && walker) {
+      walker.step(dt);
+      const pos = walker.position();
+      const root = rigRuntime.restJoint("root");
+      if (root) rootDeltaX = pos.x - root.x;
+      if (walker.finished) {
+        walking = false;
+        quest.trigger({ type: "walk_complete" });
+        animController.playById("stop_at_pond");
+      }
+      const targetCameraX = pos.x - w * 0.33;
+      camera.setX(easeToward(camera.state.x, targetCameraX, dt));
+    }
+
     const pose = animController.update(now);
     rigRuntime.applyPose({
       jointRotations: pose.jointRotations,
-      rootDeltaX: 0,
+      rootDeltaX,
       rootDeltaY: pose.rootDeltaY,
       rootRotation: pose.rootRotation,
     });
+
     const strokes = rigRuntime.transformedStrokePoints();
     ctx.save();
     ctx.translate(-camera.state.x, -camera.state.y);
@@ -404,6 +614,18 @@ function renderFrame(now: number): void {
       points.forEach((p, j) => (j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
       ctx.stroke();
     });
+
+    for (const attachment of attachments) {
+      const points = attachmentWorldPoints(attachment, rigRuntime);
+      if (points.length < 2) continue;
+      ctx.strokeStyle = attachment.color;
+      ctx.lineWidth = attachment.baseWidth;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      points.forEach((p, j) => (j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -427,6 +649,10 @@ function renderFrame(now: number): void {
   requestAnimationFrame(renderFrame);
 }
 
+function attachmentWorldPoints(attachment: Attachment, runtime: RigRuntime): Array<{ x: number; y: number }> {
+  return attachment.localPoints.map((p) => runtime.boneToWorld(attachment.boneId, p));
+}
+
 appState.subscribe((state) => {
   if (state.mode === "intro" && state.viewportWidth > 0) {
     window.setTimeout(() => {
@@ -447,8 +673,4 @@ resize();
 appState.setMode("intro");
 requestAnimationFrame(renderFrame);
 
-window.setTimeout(() => {
-  if (!spike.userHasDrawn()) scheduleIdleAction();
-}, 4000);
-
-console.log("[pencil-ai] phase 2 bootstrap ready");
+console.log("[pencil-ai] phase 4 bootstrap ready");
