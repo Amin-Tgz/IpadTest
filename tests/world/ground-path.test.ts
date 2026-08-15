@@ -67,4 +67,20 @@ describe("ground-path", () => {
       { minX: 174, maxX: 300 },
     ]);
   });
+
+  it("extends a horizontal ground line without losing erased gaps", () => {
+    const ground = new GroundPath([{ x: 0, y: 100 }, { x: 300, y: 100 }]);
+    ground.eraseNear({ x: 150, y: 100 }, 24);
+
+    expect(ground.extendHorizontalTo(900)).toBe(true);
+    expect(ground.maxX).toBeCloseTo(900);
+    expect(ground.solidRanges(0, 900)).toEqual([
+      { minX: 0, maxX: 126 },
+      { minX: 174, maxX: 900 },
+    ]);
+    expect(ground.extendHorizontalTo(800)).toBe(false);
+
+    ground.setHorizontalY(140);
+    expect(ground.pointAtDistance(600).point.y).toBe(140);
+  });
 });

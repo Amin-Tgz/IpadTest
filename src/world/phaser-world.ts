@@ -139,6 +139,7 @@ export class PhaserWorldController {
     const scene = this.scene;
     if (!scene) return;
     const worldWidth = Math.max(width * 4, 4096);
+    scene.matter.world.setBounds(0, 0, Math.max(worldWidth, ...(solidRanges ?? []).map((range) => range.maxX + width)), Math.max(2048, scene.scale.height * 2), 64, true, true, false, true);
     for (const floor of this.floors) scene.matter.world.remove(floor);
     this.floors = (solidRanges ?? [{ minX: 0, maxX: worldWidth }]).map((range) => {
       const rangeWidth = range.maxX - range.minX;

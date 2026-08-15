@@ -6,7 +6,7 @@ import { IdMap } from "../drawing/id-map.js";
 import { Camera } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { SpeechBubble } from "../story/speech-bubble.js";
-import { PersianSpeech } from "../story/persian-speech.js";
+import { GeneratedSpeech } from "../story/generated-speech.js";
 import { buildSampleCharacter, buildSampleManifest } from "./sample-character.js";
 import { AnalysisSpike } from "../character/analysis-spike.js";
 import { JointEditor } from "../character/joint-editor.js";
@@ -74,7 +74,19 @@ const store = new StrokeStore();
 const camera = new Camera();
 const renderer = new StrokeRenderer();
 const bubble = new SpeechBubble(appEl);
-const speech = new PersianSpeech();
+const speechDebugEnabled = new URLSearchParams(window.location.search).get("debug") === "speech";
+const speech = new GeneratedSpeech((event, detail) => {
+  diagnostics.info(`speech_${event}`, detail);
+  if (speechDebugEnabled) {
+    void fetch("/api/debug/speech-log", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event, detail, userAgent: navigator.userAgent }),
+      keepalive: true,
+    }).catch(() => void 0);
+  }
+});
+appEl.addEventListener("click", () => speech.unlock(), { capture: true });
 const idMap = new IdMap();
 const storage = createSessionStorage();
 const worldEntities = new WorldEntityRegistry();
@@ -106,11 +118,19 @@ let pendingSourceStrokeIds = new Set<string>();
 let lastPencil: PencilEvent | null = null;
 let pencilDown = false;
 let bubbleTimer: number | null = null;
+let speechSequence = 0;
 let lastFrame = performance.now();
 let segmentRepair: SegmentRepairEditor | null = null;
 let physicsNavigationWasActive = false;
 let navigationTravel = 0;
 let navigationLastX: number | null = null;
+let pendingDrawingReaction: {
+  action: AIActionRequest | null;
+  entityIds: string[];
+  emotion: string;
+  text: string;
+  actionId: string;
+} | null = null;
 
 function activateRig(rig: Rig, playSpawn = true): void {
   rigRuntime = new RigRuntime(rig);
@@ -170,22 +190,31 @@ function resize(): void {
 function rebuildWorld(): void {
   const { viewportWidth: w, viewportHeight: h } = appState.get();
   const baselineY = Math.round(h * BASE_LINE_Y_RATIO);
-  groundPath = new GroundPath([
-    { x: 0, y: baselineY },
-    { x: w * 3, y: baselineY },
-  ]);
   if (!worldBuilt) {
+    groundPath = new GroundPath([
+      { x: 0, y: baselineY },
+      { x: w * 3, y: baselineY },
+    ]);
     worldBuilt = true;
     const pondX = Math.round(w * 1.45);
     pond = new PondScene(pondX, baselineY - 26, 190, 72);
     walker = new Walker(groundPath, pondX - 70);
+  } else {
+    groundPath.setHorizontalY(baselineY);
+    groundPath.extendHorizontalTo(camera.state.x + w * 3);
   }
   configurePhysicsGround();
 }
 
+function ensureGroundAhead(): void {
+  const { viewportWidth: width } = appState.get();
+  if (groundPath.maxX >= camera.state.x + width * 2.5) return;
+  if (groundPath.extendHorizontalTo(camera.state.x + width * 6)) configurePhysicsGround();
+}
+
 function configurePhysicsGround(): void {
   const { viewportWidth: width, viewportHeight: height } = appState.get();
-  const worldEnd = Math.max(width * 3, 1);
+  const worldEnd = Math.max(groundPath.maxX, width * 3, 1);
   phaserWorld?.configureGround(
     width,
     Math.round(height * BASE_LINE_Y_RATIO),
@@ -311,22 +340,25 @@ function headAnchorScreen(): { x: number; y: number } {
 }
 
 function speakStoryText(text: string): void {
+  const sequence = ++speechSequence;
   if (bubbleTimer !== null) window.clearTimeout(bubbleTimer);
   bubble.hide();
   speech.stop();
   if (rigRuntime) rigRuntime.talkActive = true;
   const finish = (): void => {
+    if (sequence !== speechSequence) return;
     if (bubbleTimer !== null) window.clearTimeout(bubbleTimer);
     bubbleTimer = null;
     if (rigRuntime) rigRuntime.talkActive = false;
     quest.trigger({ type: "bubble_shown" });
   };
-  const spoken = speech.speak(text, finish);
-  diagnostics.info("persian_speech", { spoken, textLength: text.length });
-  if (!spoken) {
-    const duration = Math.max(1600, Math.min(6500, text.length * 95));
-    bubbleTimer = window.setTimeout(finish, duration);
-  }
+  void speech.speak(text, finish).then((spoken) => {
+    diagnostics.info("generated_speech", { spoken, textLength: text.length });
+    if (!spoken && sequence === speechSequence) {
+      const duration = Math.max(1600, Math.min(6500, text.length * 95));
+      bubbleTimer = window.setTimeout(finish, duration);
+    }
+  });
 }
 
 function beginAwaitingDrawing(goalId: string, resetCheckpoint = true): void {
@@ -415,9 +447,10 @@ async function resolveDrawingAttempt(): Promise<void> {
       lastFullMapping = full.mapping;
       const registered = registerWorldObjects(analysis, full.mapping, reviewSourceStrokeIds);
       equipDetectedObjects(analysis, full.mapping);
-      if (!executeAIAction(analysis.action ?? null, registered.entityIds)) playReactionMotion(analysis.reaction.emotion);
       clearTemporaryReviewInk(reviewSourceStrokeIds, registered.retainedStrokeIds);
-      speakStoryText(
+      walkToDrawingReaction(
+        analysis,
+        registered.entityIds,
         looksPersian(analysis.reaction.bubble)
           ? analysis.reaction.bubble
           : "دیدمش! بگذار ببینم با آن چه کار می‌شود کرد…",
@@ -464,6 +497,52 @@ function playReactionMotion(emotion: string): void {
   }
 }
 
+function finishDrawingReaction(
+  action: AIActionRequest | null,
+  entityIds: string[],
+  emotion: string,
+  text: string,
+): void {
+  const movementAction = action?.type === "move" || action?.type === "climb";
+  if (movementAction || !executeAIAction(action, entityIds)) playReactionMotion(emotion);
+  speakStoryText(text);
+  refreshReviewControls();
+}
+
+function walkToDrawingReaction(analysis: DrawingAnalysis, entityIds: string[], text: string): void {
+  if (!rigRuntime || analysis.objects.length === 0 || analysis.mappedAction === "ground_erased") {
+    finishDrawingReaction(analysis.action ?? null, entityIds, analysis.reaction.emotion, text);
+    return;
+  }
+  const root = rigRuntime.jointWorld("root");
+  const mapping = lastFullMapping;
+  const rightEdge = mapping
+    ? Math.max(...analysis.objects.map((object) => imageToWorldX(object.boundingBox.x + object.boundingBox.width, mapping)))
+    : Number.NaN;
+  const clearance = Math.max(42, 46 * rigRuntime.proportionScale);
+  const targetX = rightEdge + clearance;
+  if (!root || !Number.isFinite(targetX) || root.x >= targetX - 12) {
+    finishDrawingReaction(analysis.action ?? null, entityIds, analysis.reaction.emotion, text);
+    return;
+  }
+  ensureGroundAhead();
+  const navigation = phaserWorld?.walkTo(targetX);
+  if (!navigation?.started) {
+    diagnostics.info("drawing_reaction_walk_not_started", { reason: navigation?.reason ?? "physics_world_unavailable", targetX });
+    finishDrawingReaction(analysis.action ?? null, entityIds, analysis.reaction.emotion, text);
+    return;
+  }
+  pendingDrawingReaction = {
+    action: analysis.action ?? null,
+    entityIds,
+    emotion: analysis.reaction.emotion,
+    text,
+    actionId: navigation.actionId,
+  };
+  animController.playById("walk");
+  diagnostics.info("drawing_reaction_walk_started", { actionId: navigation.actionId, targetX, rightEdge });
+}
+
 function inferredPhysicsShape(object: DrawingAnalysis["objects"][number]): PhysicsShape | null {
   if (object.physicsShape && object.physicsShape !== "none") return object.physicsShape;
   const semantic = `${object.type} ${object.affordances.join(" ")}`.toLowerCase();
@@ -496,7 +575,7 @@ function registerWorldObjects(
         point.y >= bounds.y - 12 && point.y <= bounds.y + bounds.height + 12,
       ))
       .map((stroke) => stroke.id);
-    const remainsInWorld = physicsShape !== null || object.category === "wearable" || object.category === "held_tool";
+    const remainsInWorld = true;
     if (remainsInWorld) objectStrokeIds.forEach((id) => retainedStrokeIds.add(id));
     worldEntities.upsert({
       id,
@@ -754,6 +833,26 @@ resetEl.addEventListener("click", () => {
   window.location.reload();
 });
 appEl.appendChild(resetEl);
+
+if (speechDebugEnabled) {
+  const speechDebugEl = document.createElement("button");
+  speechDebugEl.textContent = "🔊 تست صدا";
+  speechDebugEl.title = "تست مستقیم صدای مرورگر";
+  speechDebugEl.style.cssText = [
+    "position:absolute", "z-index:60", "top:max(14px, env(safe-area-inset-top))", "right:14px",
+    "min-height:52px", "padding:10px 18px", "border-radius:14px", "border:2px solid #D8F6FF",
+    "background:#103B46", "color:#F7F5EE", "font:700 16px system-ui", "direction:rtl",
+  ].join(";");
+  speechDebugEl.addEventListener("click", () => {
+    diagnostics.info("speech_debug_button_clicked", speech.snapshot());
+    void speech.speak("سلام! این صدای تازهٔ من است. آماده‌ام نقاشی‌ات را ببینم!", () => {
+      diagnostics.info("speech_debug_completed", speech.snapshot());
+    }).then((played) => {
+      diagnostics.info("speech_debug_result", { played });
+    });
+  });
+  appEl.appendChild(speechDebugEl);
+}
 
 function controlIcon(kind: "restart" | "undo" | "eraser"): string {
   const paths = {
@@ -1091,7 +1190,7 @@ function refreshReviewControls(): void {
   if (mode === "intro" && spike.status !== "analyzing" && spike.status !== "done" && spike.userHasDrawn()) {
     reviveEl.style.opacity = "1";
     reviveEl.style.pointerEvents = "auto";
-  } else if (mode === "awaiting" && !analysisInFlight && hasPendingReview()) {
+  } else if (mode === "awaiting" && !analysisInFlight && !pendingDrawingReaction && hasPendingReview()) {
     reviewEl.style.opacity = "1";
     reviewEl.style.pointerEvents = "auto";
     diagnostics.info("drawing_review_button_shown", { checkpoint, strokeCount: store.count(), groundChangePending });
@@ -1099,7 +1198,7 @@ function refreshReviewControls(): void {
 }
 
 reviewEl.addEventListener("click", () => {
-  if (analysisInFlight || appState.get().mode !== "awaiting" || !hasPendingReview()) return;
+  if (analysisInFlight || pendingDrawingReaction || appState.get().mode !== "awaiting" || !hasPendingReview()) return;
   hideReview();
   void resolveDrawingAttempt();
 });
@@ -1128,6 +1227,7 @@ repairDoneEl.addEventListener("click", () => {
 
 const pointer = new PointerInput(canvas, store, camera, {
   onStrokeStart: () => {
+    speechSequence++;
     pencilDown = true;
     hintEl.style.opacity = "0";
     hintVisible = false;
@@ -1252,6 +1352,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
   ctx.fillStyle = PALETTE.background;
   ctx.fillRect(0, 0, w, h);
 
+  ensureGroundAhead();
   ctx.strokeStyle = PALETTE.primaryInk;
   ctx.lineWidth = BASE_LINE_WIDTH + 1;
   ctx.lineCap = "round";
@@ -1314,6 +1415,17 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
         navigationTravel = 0;
         navigationLastX = null;
         if (animController.currentId === "walk") animController.playById("idle");
+        const pending = pendingDrawingReaction;
+        const snapshot = phaserWorld?.navigationSnapshot();
+        if (pending && snapshot?.actionId === pending.actionId) {
+          pendingDrawingReaction = null;
+          diagnostics.info("drawing_reaction_walk_finished", {
+            actionId: pending.actionId,
+            state: snapshot.state,
+            failureReason: snapshot.failureReason,
+          });
+          finishDrawingReaction(pending.action, pending.entityIds, pending.emotion, pending.text);
+        }
       }
     }
 

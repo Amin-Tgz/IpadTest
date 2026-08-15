@@ -14,3 +14,5 @@ tests/**/*.d.ts
 src/**/*.js
 src/**/*.d.ts
 .playwright-mcp/*
+.playwright-cli/
+output/playwright/

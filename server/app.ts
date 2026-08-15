@@ -11,6 +11,8 @@ import { analyzeCharacterRoute } from "./routes/analyze-character.js";
 import { analyzeDrawingRoute } from "./routes/analyze-drawing.js";
 import { configPublicRoute } from "./routes/config-public.js";
 import { rateLimiter } from "./middleware/rate-limit.js";
+import { GeminiSpeechGenerator, type SpeechGenerator } from "./ai/gemini-tts.js";
+import { speechRoute } from "./routes/speech.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,11 +20,13 @@ export interface AppDeps {
   config?: ServerConfig;
   provider?: AIProvider;
   enableRateLimit?: boolean;
+  speechGenerator?: SpeechGenerator;
 }
 
 export function createApp(deps: AppDeps = {}) {
   const cfg = deps.config ?? loadConfig();
   const provider = deps.provider ?? new OpenAICompatibleProvider(cfg);
+  const speechGenerator = deps.speechGenerator ?? new GeminiSpeechGenerator(cfg);
   const app = express();
 
   app.use(express.json({ limit: "24mb" }));
@@ -31,14 +35,24 @@ export function createApp(deps: AppDeps = {}) {
     res.json({ ok: true });
   });
 
+  app.post("/api/debug/speech-log", (req, res) => {
+    const event = typeof req.body?.event === "string" ? req.body.event.slice(0, 80) : "invalid_event";
+    const detail = req.body?.detail && typeof req.body.detail === "object" ? req.body.detail : {};
+    const userAgent = typeof req.body?.userAgent === "string" ? req.body.userAgent.slice(0, 240) : "unknown";
+    console.log(`[pencil-ai] speech_debug ${event}`, { ...detail, userAgent });
+    res.status(204).end();
+  });
+
   app.use("/api/config/public", configPublicRoute(provider.model));
 
   if (deps.enableRateLimit ?? true) {
     app.use("/api/character", rateLimiter(12, 60_000));
     app.use("/api/drawing", rateLimiter(20, 60_000));
+    app.use("/api/speech", rateLimiter(30, 60_000));
   }
   app.use("/api/character/analyze", analyzeCharacterRoute(provider, cfg));
   app.use("/api/drawing/analyze", analyzeDrawingRoute(provider, cfg));
+  app.use("/api/speech", speechRoute(speechGenerator));
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof SyntaxError) {

@@ -30,6 +30,28 @@ export class GroundPath {
     return this.totalLength;
   }
 
+  get maxX(): number {
+    return this.samples.at(-1)?.x ?? 0;
+  }
+
+  extendHorizontalTo(maxX: number, spacing = 8): boolean {
+    const last = this.samples.at(-1);
+    if (!last || maxX <= last.x) return false;
+    const startX = last.x;
+    const distance = maxX - startX;
+    const steps = Math.max(1, Math.ceil(distance / spacing));
+    for (let index = 1; index <= steps; index++) {
+      const x = startX + distance * (index / steps);
+      this.samples.push({ x, y: last.y, distance: last.distance + (x - startX) });
+    }
+    this.totalLength = last.distance + distance;
+    return true;
+  }
+
+  setHorizontalY(y: number): void {
+    for (const sample of this.samples) sample.y = y;
+  }
+
   pointAtDistance(d: number): { point: SamplePoint; tangentAngle: number } {
     const clamped = Math.max(0, Math.min(d, this.totalLength));
     const samples = this.samples;

@@ -113,3 +113,11 @@ PWA fullscreen, session reset, perf.
 - Character manifests migrate to v2 with AI part polygons and Pencil-lasso segment overrides; bone-owned segments overlap at seams.
 - Drawing analysis can return validated capability actions and collision semantics for platforms, stairs, slopes, obstacles, and dynamic objects.
 - On-screen diagnostics were removed while console logs remain; primary bottom actions have 15% larger text, padding, and touch height.
+
+## Drawing reaction movement and speech checkpoint
+
+- Safari speech synthesis is unlocked from a direct button tap before asynchronous AI responses speak.
+- Recognized free-play drawings remain visible; the character walks beyond the drawing's right edge before performing and speaking its reaction.
+- The baseline and its Matter collision floor extend ahead of the camera, preserving continuous walking as the world scrolls.
+- Persian speech now uses server-generated Gemini Flash TTS (`gemini-2.5-flash-tts`, `Leda`) instead of device voices. The server converts 24 kHz PCM to WAV, caches repeated lines in memory, and the client plays through a tap-unlocked Web Audio context on iPad Safari.
+- `TTS_MODEL`, `TTS_VOICE`, and `TTS_STYLE` provide voice and performance control without exposing provider credentials to the client.
