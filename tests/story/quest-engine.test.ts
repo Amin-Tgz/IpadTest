@@ -13,8 +13,7 @@ describe("QuestEngine", () => {
     const commands = collectCommands(engine);
 
     engine.trigger({ type: "hero_ready" });
-    expect(commands[0]).toMatchObject({ type: "anim", clip: "spawn" });
-    expect(commands[1]).toMatchObject({ type: "bubble" });
+    expect(commands[0]).toMatchObject({ type: "bubble", motion: "spawn" });
 
     engine.trigger({ type: "bubble_shown" });
     engine.trigger({ type: "bubble_shown" });

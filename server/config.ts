@@ -10,8 +10,8 @@ const envSchema = z.object({
   AI_JSON_MODE: z.enum(["json_schema", "json_object", "text"]).default("json_schema"),
   AI_THINKING_LEVEL: z.enum(["low", "medium", "high"]).default("low"),
   TTS_MODEL: z.string().min(1).default("gemini-2.5-flash-tts"),
-  TTS_VOICE: z.string().min(1).default("Leda"),
-  TTS_STYLE: z.string().min(1).default("با صدایی جوان، بی‌طرف، گرم و کمی خش‌دار؛ اندکی تو دماغی، بازیگوش، طبیعی و به فارسی معیار ایران"),
+  TTS_VOICE: z.string().min(1).default("Puck"),
+  TTS_STYLE: z.string().min(1).default("با صدایی جوان، بازیگوش، گرم و کمی خش‌دار؛ اندکی تو دماغی، با ضرباهنگ تند، مکث‌های کمیک و فارسی معیار ایران"),
 });
 
 export type ServerConfig = z.infer<typeof envSchema>;

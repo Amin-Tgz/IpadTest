@@ -17,6 +17,8 @@ export interface DialogueLine {
   bubble: string;
   spoken: string;
   emotion: HeroVoicePreset;
+  audioUrl?: string;
+  motion?: MotionId;
 }
 
 export type QuestEvent =
@@ -58,8 +60,8 @@ export const QUESTS: Record<string, QuestDefinition> = {
     id: "draw_shoes",
     prompt: "The child should draw two shoes, boots, skates, or slippers for the fixed hero, one near each foot.",
     requests: [
-      { emotion: "protesting", bubble: "اِ! این خط برای پای برهنه‌ام خیلی زبره.", spoken: "اِ! این خط برای پای برهنه‌ام خیلی زبره." },
-      { emotion: "curious", bubble: "دو تا کفش برام می‌کشی؟ یکی برای هر پا.", spoken: "هوم... دو تا کفش برام می‌کشی؟ یکی برای هر پا." },
+      { emotion: "protesting", motion: "protest", audioUrl: "/audio/hero/shoes-protest.pwa", bubble: "اِ! این خط برای پای برهنه‌ام خیلی زبره.", spoken: "اِ! این خط برای پای برهنه‌ام خیلی زبره." },
+      { emotion: "curious", motion: "confused", audioUrl: "/audio/hero/shoes-request.pwa", bubble: "دو تا کفش برام می‌کشی؟ یکی برای هر پا.", spoken: "هوم... دو تا کفش برام می‌کشی؟ یکی برای هر پا." },
     ],
     acceptedCategories: ["shoe", "boot", "skate", "slipper"],
     targetBones: ["left_foot", "right_foot"],
@@ -69,8 +71,8 @@ export const QUESTS: Record<string, QuestDefinition> = {
     id: "draw_fishing_tool",
     prompt: "The child should draw a fishing rod, net, spear, or magnet the fixed hero can hold in the right hand.",
     requests: [
-      { emotion: "curious", bubble: "اوه! توی برکه یک چیزی تکان خورد.", spoken: "اوه! توی برکه یک چیزی تکان خورد." },
-      { emotion: "protesting", bubble: "با دست خالی که نمی‌شه! یک ابزار برام بکش.", spoken: "اِ... با دست خالی که نمی‌شه! یک ابزار برام بکش." },
+      { emotion: "curious", motion: "stop_at_pond", audioUrl: "/audio/hero/pond-notice.pwa", bubble: "اوه! توی برکه یک چیزی تکان خورد.", spoken: "اوه! توی برکه یک چیزی تکان خورد." },
+      { emotion: "protesting", motion: "protest", audioUrl: "/audio/hero/tool-request.pwa", bubble: "با دست خالی که نمی‌شه! یک ابزار برام بکش.", spoken: "اِ... با دست خالی که نمی‌شه! یک ابزار برام بکش." },
     ],
     acceptedCategories: ["fishing_rod", "net", "spear", "magnet"],
     targetBones: ["right_hand"],
@@ -109,8 +111,7 @@ export class QuestEngine {
       case "DORMANT":
         if (event.type === "hero_ready") {
           this.state = "SPAWN";
-          this.playAnim("spawn");
-          this.queueBubbles(QUESTS.draw_shoes.requests, () => {
+          this.queueBubbles(QUESTS.draw_shoes.requests.map((line, index) => index === 0 ? { ...line, motion: "spawn" } : line), () => {
             this.state = "AWAIT_SHOES";
             this.command({ type: "await_drawing", goalId: "draw_shoes" });
           });
@@ -125,12 +126,12 @@ export class QuestEngine {
         if (event.type === "drawing_validated" && event.action === "equip_shoes") {
           this.state = "EQUIP_SHOES";
           this.command({ type: "attach_shoes" });
-          this.playAnim("happy");
           this.queueBubbles([
             {
               bubble: event.reactionBubble ?? "آها! این شد یک کفش حسابی؛ بریم!",
               spoken: event.reactionSpoken ?? "آها! این شد یک کفش حسابی؛ بریم!",
               emotion: event.emotion ?? "delighted",
+              motion: "happy",
             },
           ], () => {
             this.command({ type: "start_walk" });
@@ -149,7 +150,6 @@ export class QuestEngine {
       case "WALK_TO_POND":
         if (event.type === "walk_complete") {
           this.state = "REQUEST_TOOL";
-          this.playAnim("stop_at_pond");
           this.queueBubbles(QUESTS.draw_fishing_tool.requests, () => {
             this.state = "AWAIT_TOOL";
             this.command({ type: "await_drawing", goalId: "draw_fishing_tool" });
@@ -220,10 +220,6 @@ export class QuestEngine {
 
   private advanceBubbles(): void {
     this.emitNextBubble();
-  }
-
-  private playAnim(clip: MotionId): void {
-    this.command({ type: "anim", clip });
   }
 
   private command(command: StoryCommand): void {

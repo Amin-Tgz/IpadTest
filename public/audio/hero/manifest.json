@@ -1,0 +1,37 @@
+{
+  "shoes-protest": {
+    "text": "اِ! این خط برای پای برهنه‌ام خیلی زبره.",
+    "preset": "protesting",
+    "path": "/audio/hero/shoes-protest.pwa"
+  },
+  "shoes-request": {
+    "text": "هوم... دو تا کفش برام می‌کشی؟ یکی برای هر پا.",
+    "preset": "curious",
+    "path": "/audio/hero/shoes-request.pwa"
+  },
+  "pond-notice": {
+    "text": "اوه! توی برکه یک چیزی تکان خورد.",
+    "preset": "curious",
+    "path": "/audio/hero/pond-notice.pwa"
+  },
+  "tool-request": {
+    "text": "اِ... با دست خالی که نمی‌شه! یک ابزار برام بکش.",
+    "preset": "protesting",
+    "path": "/audio/hero/tool-request.pwa"
+  },
+  "interjection-curious": {
+    "text": "اِ؟",
+    "preset": "curious",
+    "path": "/audio/hero/interjection-curious.pwa"
+  },
+  "interjection-thinking": {
+    "text": "هوم...",
+    "preset": "confused",
+    "path": "/audio/hero/interjection-thinking.pwa"
+  },
+  "interjection-delighted": {
+    "text": "آها!",
+    "preset": "delighted",
+    "path": "/audio/hero/interjection-delighted.pwa"
+  }
+}

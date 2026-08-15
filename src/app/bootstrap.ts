@@ -7,6 +7,7 @@ import { Camera } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { SpeechBubble } from "../story/speech-bubble.js";
 import { GeneratedSpeech } from "../story/generated-speech.js";
+import { StoryBeatCoordinator, type StoryBeat } from "../story/story-beat.js";
 import { buildSampleCharacter, buildSampleManifest } from "./sample-character.js";
 import { AnalysisSpike } from "../character/analysis-spike.js";
 import { JointEditor } from "../character/joint-editor.js";
@@ -14,7 +15,7 @@ import { buildManifest, migrateManifest, type CharacterManifest } from "../chara
 import { buildRig, type Rig } from "../character/rig-builder.js";
 import { RigRuntime } from "../character/rig-runtime.js";
 import { AnimationController } from "../animation/animation-controller.js";
-import { MOTION_CLIPS } from "../animation/motion-clips.js";
+import { MOTION_CLIPS, type MotionId } from "../animation/motion-clips.js";
 import { QuestEngine, type StoryCommand } from "../story/quest-engine.js";
 import { PondScene } from "../world/pond-scene.js";
 import { Walker, easeToward } from "../world/walker.js";
@@ -89,7 +90,6 @@ const speech = new GeneratedSpeech((event, detail) => {
     }).catch(() => void 0);
   }
 });
-appEl.addEventListener("click", () => speech.unlock(), { capture: true });
 const idMap = new IdMap();
 const storage = createSessionStorage();
 const worldEntities = new WorldEntityRegistry();
@@ -120,8 +120,6 @@ let pendingDetected: DrawingAnalysis | null = null;
 let pendingSourceStrokeIds = new Set<string>();
 let lastPencil: PencilEvent | null = null;
 let pencilDown = false;
-let bubbleTimer: number | null = null;
-let speechSequence = 0;
 let lastFrame = performance.now();
 let segmentRepair: SegmentRepairEditor | null = null;
 let physicsNavigationWasActive = false;
@@ -176,7 +174,6 @@ function startLivingLineIntro(): void {
   appState.setMode("intro");
   introBumpStartedAt = performance.now();
   if (introTimer !== null) window.clearTimeout(introTimer);
-  speech.preload(QUESTS.draw_shoes.requests.map((line) => ({ text: line.spoken, preset: line.emotion })));
   introTimer = window.setTimeout(() => {
     introTimer = null;
     introBumpStartedAt = null;
@@ -391,32 +388,45 @@ function headAnchorScreen(): { x: number; y: number } {
   return head ? { x: head.x, y: head.y - 60 } : { x: w * 0.5, y: h * 0.4 };
 }
 
+const storyBeats = new StoryBeatCoordinator({
+  showBubble: (beat) => {
+    bubble.show(beat.bubble, headAnchorScreen());
+    if (rigRuntime) rigRuntime.talkActive = true;
+    diagnostics.info("story_beat_shown", { id: beat.id, emotion: beat.emotion, motion: beat.motion ?? null });
+  },
+  playSpeech: (request) => speech.play(request),
+  startMotion: (beat) => startBeatMotion(beat),
+  onSettled: (beat, result) => {
+    if (rigRuntime) rigRuntime.talkActive = false;
+    if (animController.currentId === beat.motion || animController.currentId === "talk") animController.playById("idle");
+    diagnostics.info("story_beat_settled", { id: beat.id, speechStatus: result.status, durationMs: result.durationMs });
+  },
+  cancelSpeech: (reason) => speech.cancel(reason),
+});
+
+let storyBeatSequence = 0;
+
+function startBeatMotion(beat: StoryBeat): Promise<void> {
+  const motion = beat.motion ?? motionForEmotion(beat.emotion);
+  if (!rigRuntime || !motion) return Promise.resolve();
+  setExpressionForEmotion(beat.emotion);
+  animController.playById(motion);
+  const clip = MOTION_CLIPS[motion];
+  const durationMs = clip ? clip.durationMs : 0;
+  return new Promise((resolve) => window.setTimeout(resolve, durationMs));
+}
+
 function speakStoryText(
   bubbleText: string,
   spokenText = bubbleText,
   preset: HeroVoicePreset = "curious",
+  audioUrl?: string,
+  motion?: MotionId,
 ): void {
-  const sequence = ++speechSequence;
-  if (bubbleTimer !== null) window.clearTimeout(bubbleTimer);
-  bubble.hide();
-  bubble.show(bubbleText, headAnchorScreen());
-  speech.stop();
-  if (rigRuntime) rigRuntime.talkActive = true;
-  const finish = (): void => {
-    if (sequence !== speechSequence) return;
-    if (bubbleTimer !== null) window.clearTimeout(bubbleTimer);
-    bubbleTimer = null;
-    if (rigRuntime) rigRuntime.talkActive = false;
-    quest.trigger({ type: "bubble_shown" });
-  };
-  const fallbackDuration = Math.max(1900, Math.min(5600, bubbleText.length * 92));
-  bubbleTimer = window.setTimeout(() => {
-    speech.stop();
-    finish();
-  }, fallbackDuration);
-  void speech.speak(spokenText, finish, preset).then((spoken) => {
-    diagnostics.info("generated_speech", { spoken, textLength: spokenText.length, preset });
-    if (!spoken && sequence === speechSequence) diagnostics.info("speech_fallback_active", { fallbackDuration });
+  const id = `beat_${++storyBeatSequence}`;
+  void storyBeats.enqueue({ id, bubble: bubbleText, spoken: spokenText, emotion: preset, audioUrl, motion }).then((result) => {
+    diagnostics.info("generated_speech", { status: result.status, textLength: spokenText.length, preset, source: result.source });
+    if (result.status !== "cancelled") quest.trigger({ type: "bubble_shown" });
   });
 }
 
@@ -556,24 +566,26 @@ async function resolveDrawingAttempt(): Promise<void> {
   }
 }
 
-function playReactionMotion(emotion: HeroVoicePreset): void {
+function setExpressionForEmotion(emotion: HeroVoicePreset): void {
+  if (!rigRuntime) return;
   if (emotion === "sad") {
-    rigRuntime!.expression = "sad";
-    animController.playById("sad");
+    rigRuntime.expression = "sad";
   } else if (emotion === "delighted") {
-    rigRuntime!.expression = "happy";
-    animController.playById("happy");
+    rigRuntime.expression = "happy";
   } else if (emotion === "protesting") {
-    rigRuntime!.expression = "surprised";
-    animController.playById("protest");
-  } else if (emotion === "effort") {
-    rigRuntime!.expression = "neutral";
-    animController.playById("effort");
+    rigRuntime.expression = "surprised";
   } else {
-    rigRuntime!.expression = "neutral";
-    if (emotion === "confused" || emotion === "curious") animController.playById("confused");
-    else animController.playById("talk");
+    rigRuntime.expression = "neutral";
   }
+}
+
+function motionForEmotion(emotion: HeroVoicePreset): MotionId {
+  if (emotion === "sad") return "sad";
+  if (emotion === "delighted") return "happy";
+  if (emotion === "protesting") return "protest";
+  if (emotion === "effort") return "effort";
+  if (emotion === "confused" || emotion === "curious") return "confused";
+  return "talk";
 }
 
 function finishDrawingReaction(
@@ -584,8 +596,8 @@ function finishDrawingReaction(
   spokenText: string,
 ): void {
   const movementAction = action?.type === "move" || action?.type === "climb";
-  if (movementAction || !executeAIAction(action, entityIds)) playReactionMotion(emotion);
-  speakStoryText(bubbleText, spokenText, emotion);
+  const actionExecuted = !movementAction && executeAIAction(action, entityIds);
+  speakStoryText(bubbleText, spokenText, emotion, undefined, actionExecuted ? undefined : motionForEmotion(emotion));
   refreshReviewControls();
 }
 
@@ -821,7 +833,7 @@ function castSequence(): void {
 quest.onCommand = (command: StoryCommand) => {
   switch (command.type) {
     case "bubble":
-      speakStoryText(command.bubble, command.spoken, command.emotion);
+      speakStoryText(command.bubble, command.spoken, command.emotion, command.audioUrl, command.motion);
       break;
     case "anim":
       animController.playById(command.clip);
@@ -908,6 +920,7 @@ resetEl.style.cssText = [
 resetEl.innerHTML = `${controlIcon("restart")}<span style="font:11px system-ui">شروع دوباره</span>`;
 resetEl.title = "شروع دوباره";
 resetEl.addEventListener("click", () => {
+  storyBeats.cancel("restart");
   if (storage) void storage.clearSession();
   window.location.reload();
 });
@@ -924,10 +937,9 @@ if (speechDebugEnabled) {
   ].join(";");
   speechDebugEl.addEventListener("click", () => {
     diagnostics.info("speech_debug_button_clicked", speech.snapshot());
-    void speech.speak("سلام! این صدای تازهٔ من است. آماده‌ام نقاشی‌ات را ببینم!", () => {
+    void speech.play({ text: "سلام! این صدای تازهٔ من است. آماده‌ام نقاشی‌ات را ببینم!", preset: "delighted" }).then((result) => {
       diagnostics.info("speech_debug_completed", speech.snapshot());
-    }).then((played) => {
-      diagnostics.info("speech_debug_result", { played });
+      diagnostics.info("speech_debug_result", result);
     });
   });
   appEl.appendChild(speechDebugEl);
@@ -1322,23 +1334,12 @@ repairDoneEl.addEventListener("click", () => {
 
 const pointer = new PointerInput(canvas, store, camera, {
   onStrokeStart: () => {
-    speechSequence++;
     pencilDown = true;
     hintEl.style.opacity = "0";
     hintVisible = false;
     hideRevive();
     hideReview();
     hideSampleDemo();
-    if (bubble.isVisible()) {
-      bubble.hide();
-      if (bubbleTimer !== null) {
-        window.clearTimeout(bubbleTimer);
-        bubbleTimer = null;
-        quest.trigger({ type: "bubble_shown" });
-      }
-    }
-    speech.stop();
-    if (rigRuntime) rigRuntime.talkActive = false;
   },
   onStrokeEnd: (stroke) => {
     pencilDown = false;
@@ -1655,11 +1656,55 @@ phaserWorld = new PhaserWorldController(
   window.innerHeight,
 );
 
-void restoreSession().then((restored) => {
-  if (!restored) startLivingLineIntro();
-  if (typeof navigator !== "undefined" && "serviceWorker" in navigator && import.meta.env.PROD) {
-    void navigator.serviceWorker.register("/sw.js").catch(() => void 0);
-  }
+speech.preload(Object.values(QUESTS).flatMap((questDefinition) =>
+  questDefinition.requests.map((line) => ({
+    text: line.spoken,
+    preset: line.emotion,
+    audioUrl: line.audioUrl,
+  })),
+));
+
+const startExperienceEl = document.createElement("button");
+startExperienceEl.textContent = "شروع";
+startExperienceEl.title = "شروع داستان";
+startExperienceEl.setAttribute("aria-label", "شروع داستان");
+startExperienceEl.style.cssText = [
+  "position:absolute",
+  "z-index:100",
+  "left:50%",
+  "top:50%",
+  "transform:translate(-50%,-50%)",
+  "min-width:132px",
+  "min-height:58px",
+  "padding:12px 26px",
+  "border-radius:999px",
+  "border:3px solid #F7F5EE",
+  "background:#103B46",
+  "color:#F7F5EE",
+  "font:700 22px system-ui,'Segoe UI',Tahoma,sans-serif",
+  "cursor:pointer",
+  "box-shadow:0 10px 30px rgba(0,0,0,.3)",
+].join(";");
+appEl.appendChild(startExperienceEl);
+
+let experienceStarting = false;
+startExperienceEl.addEventListener("click", () => {
+  if (experienceStarting) return;
+  experienceStarting = true;
+  startExperienceEl.disabled = true;
+  void speech.unlock().finally(() => {
+    startExperienceEl.remove();
+    void restoreSession().then((restored) => {
+      if (!restored) startLivingLineIntro();
+    });
+  });
 });
+
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator && import.meta.env.PROD) {
+  void navigator.serviceWorker.register("/sw.js").catch(() => void 0);
+}
+
+// The experience deliberately waits for the start gesture above. Safari only
+// permits reliable Web Audio playback after a direct user interaction.
 
 console.log("[pencil-ai] phase 7 bootstrap ready");
