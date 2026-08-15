@@ -68,6 +68,12 @@ describe("ground-path", () => {
     ]);
   });
 
+  it("reports the nearest intact edges around a gap", () => {
+    const ground = new GroundPath([{ x: 0, y: 100 }, { x: 200, y: 100 }]);
+    ground.eraseNear({ x: 100, y: 100 }, 20);
+    expect(ground.nearestIntactEdges(100, 0, 200)).toEqual({ left: 80, right: 120 });
+  });
+
   it("extends a horizontal ground line without losing erased gaps", () => {
     const ground = new GroundPath([{ x: 0, y: 100 }, { x: 300, y: 100 }]);
     ground.eraseNear({ x: 150, y: 100 }, 24);

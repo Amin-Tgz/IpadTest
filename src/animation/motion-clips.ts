@@ -16,7 +16,9 @@ export type MotionId =
   | "hold_rod"
   | "cast_rod"
   | "pull_fish"
-  | "point";
+  | "point"
+  | "ladder_pickup"
+  | "ladder_climb";
 
 export interface MotionTrack {
   t: number[];
@@ -76,6 +78,35 @@ export function evaluateMotion(clip: MotionClip, timeMs: number): Pose {
 }
 
 export const MOTION_CLIPS: Record<MotionId, MotionClip> = {
+  ladder_pickup: {
+    id: "ladder_pickup",
+    durationMs: 1250,
+    loop: false,
+    jointTracks: {
+      torso: track([[0, 0], [0.28, 14], [0.62, -8], [1, 0]]),
+      head: track([[0, 0], [0.3, 12], [0.68, -5], [1, 0]]),
+      left_shoulder: track([[0, 0], [0.35, -70], [0.72, -35], [1, -20]]),
+      right_shoulder: track([[0, 0], [0.35, 70], [0.72, 35], [1, 20]]),
+      left_elbow: track([[0, 0], [0.38, 34], [1, 12]]),
+      right_elbow: track([[0, 0], [0.38, -34], [1, -12]]),
+    },
+  },
+  ladder_climb: {
+    id: "ladder_climb",
+    durationMs: 720,
+    loop: true,
+    jointTracks: {
+      left_shoulder: track([[0, -65], [0.5, -28], [1, -65]]),
+      right_shoulder: track([[0, 28], [0.5, 65], [1, 28]]),
+      left_elbow: track([[0, 35], [0.5, 8], [1, 35]]),
+      right_elbow: track([[0, -8], [0.5, -35], [1, -8]]),
+      left_hip: track([[0, 22], [0.5, -18], [1, 22]]),
+      right_hip: track([[0, -18], [0.5, 22], [1, -18]]),
+      left_knee: track([[0, 32], [0.5, 8], [1, 32]]),
+      right_knee: track([[0, 8], [0.5, 32], [1, 8]]),
+    },
+    rootY: track([[0, 1], [0.5, -2], [1, 1]]),
+  },
   point: {
     id: "point",
     durationMs: 900,

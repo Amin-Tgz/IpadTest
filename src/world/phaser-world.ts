@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import type { RigRuntime } from "../character/rig-runtime.js";
 import { stairStepRects, stairTopWaypoints } from "./physics-geometry.js";
+import type { RescuePhase } from "./ladder-rescue.js";
 
 export type PhysicsShape = "platform" | "stairs" | "slope" | "obstacle" | "dynamic" | "ladder";
 
@@ -34,6 +35,8 @@ export interface NavigationSnapshot {
   waypointCount: number;
   progress: number;
   failureReason: string | null;
+  rescuePhase: RescuePhase;
+  rescueComplete: boolean;
 }
 
 interface NavigationState {
@@ -82,10 +85,12 @@ export class PhaserWorldController {
   private lastNavigation: NavigationSnapshot = {
     actionId: null, state: "idle", targetX: null, targetY: null, targetEntityId: null,
     waypointIndex: 0, waypointCount: 0, progress: 0, failureReason: null,
+    rescuePhase: "NONE", rescueComplete: false,
   };
   private actionSequence = 0;
   private wasAirborne = false;
   private landedAt = 0;
+  private rescuePhase: RescuePhase = "NONE";
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -249,7 +254,54 @@ export class PhaserWorldController {
   }
 
   navigationSnapshot(): NavigationSnapshot {
-    return { ...this.lastNavigation };
+    return { ...this.lastNavigation, rescuePhase: this.rescuePhase, rescueComplete: this.rescuePhase === "RECOVERED" };
+  }
+
+  holdForRescue(boundaryRootY: number): boolean {
+    if (!this.scene || !this.characterBody) return false;
+    this.stopNavigation();
+    this.scene.matter.body.setPosition(this.characterBody, {
+      x: this.characterBody.position.x,
+      y: boundaryRootY - this.characterRootOffset.y,
+    });
+    this.scene.matter.body.setVelocity(this.characterBody, { x: 0, y: 0 });
+    this.scene.matter.body.setStatic(this.characterBody, true);
+    if (this.rescuePhase !== "FALLEN_WAITING_RESCUE") {
+      this.rescuePhase = "FALLEN_WAITING_RESCUE";
+      this.emit("rescue_waiting", { x: this.characterBody.position.x, rootY: boundaryRootY });
+    }
+    return true;
+  }
+
+  beginRescue(): boolean {
+    if (!this.characterBody || this.rescuePhase !== "FALLEN_WAITING_RESCUE") return false;
+    this.rescuePhase = "RESCUING";
+    this.emit("rescue_started", {});
+    return true;
+  }
+
+  setRescueRootPosition(point: { x: number; y: number }): boolean {
+    if (!this.scene || !this.characterBody || this.rescuePhase !== "RESCUING") return false;
+    this.scene.matter.body.setPosition(this.characterBody, {
+      x: point.x - this.characterRootOffset.x,
+      y: point.y - this.characterRootOffset.y,
+    });
+    this.scene.matter.body.setVelocity(this.characterBody, { x: 0, y: 0 });
+    return true;
+  }
+
+  completeRescue(point: { x: number; y: number }): boolean {
+    if (!this.scene || !this.characterBody || this.rescuePhase !== "RESCUING") return false;
+    this.scene.matter.body.setPosition(this.characterBody, {
+      x: point.x - this.characterRootOffset.x,
+      y: point.y - this.characterRootOffset.y,
+    });
+    this.scene.matter.body.setStatic(this.characterBody, false);
+    this.scene.matter.body.setVelocity(this.characterBody, { x: 0, y: 0 });
+    this.rescuePhase = "RECOVERED";
+    this.wasAirborne = false;
+    this.emit("rescue_completed", { x: point.x, y: point.y });
+    return true;
   }
 
   motionState(): "grounded" | "rising" | "falling" | "landing" {
@@ -352,6 +404,8 @@ export class PhaserWorldController {
       waypointCount: total,
       progress: Math.min(0.99, navigation.waypointIndex / total),
       failureReason: null,
+      rescuePhase: this.rescuePhase,
+      rescueComplete: this.rescuePhase === "RECOVERED",
     };
   }
 
@@ -380,6 +434,7 @@ export class PhaserWorldController {
     this.lastNavigation = {
       actionId, state: this.navigation.state, targetX, targetY: targetY ?? null, targetEntityId,
       waypointIndex: 0, waypointCount: route.length, progress: 0, failureReason: null,
+      rescuePhase: this.rescuePhase, rescueComplete: this.rescuePhase === "RECOVERED",
     };
     this.emit("navigation_started", { actionId, state: this.navigation.state, targetX, targetY, targetEntityId, route });
     return { started: true, actionId };

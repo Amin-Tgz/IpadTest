@@ -135,6 +135,8 @@ Refreshing during the incomplete shoe lesson restarts that lesson with two empty
 
 Both hands have authored index-finger and thumb strokes with fixed semantic tip anchors. In free play the structured AI response may choose `point` plus a validated object index; the client selects the nearer hand, aims it with deterministic IK, holds the fingertip on target for the whole reaction beat, then clears the override.
 
+If the ground is erased under the hero, physics lets it fall to an in-view rescue boundary. Drawing a recognized ladder moves a separate transform of those same source strokes to the nearest intact edge, then a fixed hand-and-foot cycle follows deterministic upward waypoints. The raw drawing coordinates are never rewritten, and the placed ladder remains in the world after recovery.
+
 Use `?debug=speech` to show a direct voice-test button and forward speech lifecycle events to the server terminal:
 
 ```text

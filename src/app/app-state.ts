@@ -1,4 +1,4 @@
-export type AppMode = "intro" | "drawing" | "analyzing" | "setup" | "segmenting" | "live" | "awaiting" | "walking" | "ending";
+export type AppMode = "intro" | "drawing" | "analyzing" | "setup" | "segmenting" | "live" | "awaiting" | "walking" | "ending" | "fallen_waiting_rescue" | "rescuing";
 
 export interface AppState {
   mode: AppMode;

@@ -140,6 +140,20 @@ export class GroundPath {
     return solid.filter((range) => range.maxX - range.minX >= 2);
   }
 
+  nearestIntactEdges(x: number, minX = 0, maxX = this.maxX): { left: number | null; right: number | null } {
+    const solids = this.solidRanges(minX, maxX);
+    let left: number | null = null;
+    let right: number | null = null;
+    for (const range of solids) {
+      if (range.minX <= x) left = Math.max(left ?? -Infinity, Math.min(x, range.maxX));
+      if (range.maxX >= x) right = Math.min(right ?? Infinity, Math.max(x, range.minX));
+    }
+    return {
+      left: left !== null && Number.isFinite(left) ? left : null,
+      right: right !== null && Number.isFinite(right) ? right : null,
+    };
+  }
+
   private mergeErasedRanges(): void {
     const sorted = [...this.erasedRanges].sort((a, b) => a.minX - b.minX);
     const merged: Array<{ minX: number; maxX: number }> = [];

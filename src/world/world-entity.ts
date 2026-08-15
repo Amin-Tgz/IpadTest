@@ -1,4 +1,5 @@
 import type { PhysicsShape } from "./phaser-world.js";
+import type { MovableObjectTransform } from "./ladder-rescue.js";
 
 export interface WorldEntity {
   id: string;
@@ -7,6 +8,7 @@ export interface WorldEntity {
   bounds: { x: number; y: number; width: number; height: number };
   affordances: string[];
   physicsShape: PhysicsShape | null;
+  transform?: MovableObjectTransform;
 }
 
 export class WorldEntityRegistry {
@@ -18,6 +20,21 @@ export class WorldEntityRegistry {
 
   get(id: string): WorldEntity | null {
     return this.entities.get(id) ?? null;
+  }
+
+  setTransform(id: string, transform: MovableObjectTransform, bounds?: WorldEntity["bounds"]): boolean {
+    const entity = this.entities.get(id);
+    if (!entity) return false;
+    entity.transform = { ...transform };
+    if (bounds) entity.bounds = { ...bounds };
+    return true;
+  }
+
+  setSourceStrokeIds(id: string, sourceStrokeIds: string[]): boolean {
+    const entity = this.entities.get(id);
+    if (!entity) return false;
+    entity.sourceStrokeIds = [...new Set(sourceStrokeIds)];
+    return true;
   }
 
   all(): WorldEntity[] {
