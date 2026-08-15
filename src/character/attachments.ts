@@ -57,16 +57,17 @@ export function buildAttachmentFromObject(
   runtime: RigRuntime,
   index: number,
   allowedStrokeIds?: ReadonlySet<string>,
+  regionPadding = 30,
 ): Attachment | null {
   if (!object.attachTo || !object.anchor) return null;
   const boneId = resolveBoneId(object.attachTo, object.anchor, runtime);
   if (!boneId) return null;
 
   const box = {
-    x: object.boundingBox.x - 30,
-    y: object.boundingBox.y - 30,
-    width: object.boundingBox.width + 60,
-    height: object.boundingBox.height + 60,
+    x: object.boundingBox.x - regionPadding,
+    y: object.boundingBox.y - regionPadding,
+    width: object.boundingBox.width + regionPadding * 2,
+    height: object.boundingBox.height + regionPadding * 2,
   };
   const strokeIds = idMap.sampleStrokesInRegion(store, box, 4);
   const attachmentStrokes: AttachmentStroke[] = [];

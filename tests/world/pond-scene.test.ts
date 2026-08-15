@@ -22,4 +22,13 @@ describe("PondScene", () => {
     expect(pond.fishPosition(2000 + 2000)).toBeNull();
     expect(pond.fish.jumping).toBe(false);
   });
+
+  it("uses an open wave waterline instead of a closed pond outline", () => {
+    const points = pond.waterlinePoints();
+    expect(points.length).toBeGreaterThan(20);
+    expect(points[0].x).toBe(pond.x - pond.radiusX);
+    expect(points.at(-1)!.x).toBe(pond.x + pond.radiusX);
+    expect(points[0]).not.toEqual(points.at(-1));
+    expect(new Set(points.map((point) => Math.round(point.y))).size).toBeGreaterThan(2);
+  });
 });

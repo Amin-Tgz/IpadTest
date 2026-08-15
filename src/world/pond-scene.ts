@@ -43,24 +43,48 @@ export class PondScene {
     ctx.lineWidth = BASE_LINE_WIDTH;
     ctx.lineCap = "round";
 
-    ctx.beginPath();
-    ctx.ellipse(this.x, this.y, this.radiusX, this.radiusY, 0, 0, Math.PI * 2);
-    ctx.stroke();
-
-    for (let i = 0; i < 3; i++) {
-      const ry = this.radiusY * (0.55 + i * 0.16);
-      const alpha = 0.5 - i * 0.13;
-      ctx.strokeStyle = `rgba(247,245,238,${alpha})`;
-      ctx.beginPath();
-      ctx.ellipse(this.x, this.y + this.radiusY * 0.15 + i * 4, this.radiusX * (0.85 - i * 0.22), ry * 0.35, 0, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+    this.strokeOpenWave(ctx, this.x - this.radiusX, this.x + this.radiusX, this.y, 5.5, 4);
+    ctx.strokeStyle = "rgba(247,245,238,0.58)";
+    this.strokeOpenWave(ctx, this.x - this.radiusX * 0.48, this.x - this.radiusX * 0.05, this.y + 15, 2.8, 1.5);
+    ctx.strokeStyle = "rgba(247,245,238,0.42)";
+    this.strokeOpenWave(ctx, this.x + this.radiusX * 0.18, this.x + this.radiusX * 0.58, this.y + 26, 2.2, 1.25);
     ctx.strokeStyle = PALETTE.primaryInk;
 
     const fishPos = this.fishPosition(now);
     if (fishPos) this.drawFish(ctx, fishPos);
 
     ctx.restore();
+  }
+
+  waterlinePoints(count = 33): Array<{ x: number; y: number }> {
+    const pointCount = Math.max(3, count);
+    return Array.from({ length: pointCount }, (_, index) => {
+      const t = index / (pointCount - 1);
+      return {
+        x: this.x - this.radiusX + t * this.radiusX * 2,
+        y: this.y + Math.sin(t * Math.PI * 8) * 5.5,
+      };
+    });
+  }
+
+  private strokeOpenWave(
+    ctx: CanvasRenderingContext2D,
+    minX: number,
+    maxX: number,
+    y: number,
+    amplitude: number,
+    waveCount: number,
+  ): void {
+    const segments = Math.max(8, Math.ceil(waveCount * 8));
+    ctx.beginPath();
+    for (let index = 0; index <= segments; index++) {
+      const t = index / segments;
+      const pointX = minX + (maxX - minX) * t;
+      const pointY = y + Math.sin(t * Math.PI * 2 * waveCount) * amplitude;
+      if (index === 0) ctx.moveTo(pointX, pointY);
+      else ctx.lineTo(pointX, pointY);
+    }
+    ctx.stroke();
   }
 
   private drawFish(ctx: CanvasRenderingContext2D, p: { x: number; y: number }): void {

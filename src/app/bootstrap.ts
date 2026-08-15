@@ -39,6 +39,7 @@ import { hasReviewableChanges, nextReviewCheckpoint, temporaryReviewStrokeIds } 
 import { validateActionRequest } from "../ai/action-protocol.js";
 import { installLivingLineHero, LIVING_LINE_HERO_ID, type HeroVoicePreset } from "../character/living-line-hero.js";
 import { QUESTS, type QuestState } from "../story/quest-engine.js";
+import { normalizeShoeCandidates, ShoeTutorialProgress } from "../story/shoe-tutorial.js";
 
 const appEl = (() => {
   const el = document.getElementById("app");
@@ -103,6 +104,7 @@ const editor = new JointEditor(store, getViewport);
 const spike = new AnalysisSpike(store, camera, getViewport, () => groundPath, bubble, diagnostics, () => characterGuideBox());
 const animController = new AnimationController();
 const quest = new QuestEngine();
+const shoeProgress = new ShoeTutorialProgress();
 
 let rigRuntime: RigRuntime | null = null;
 let riggedStrokeIds = new Set<string>();
@@ -316,6 +318,11 @@ async function restoreSession(): Promise<boolean> {
       await storage.clearSession();
       return false;
     }
+    if (savedQuest.state === "AWAIT_SHOES" || savedQuest.state === "EQUIP_SHOES") {
+      await storage.clearSession();
+      shoeProgress.reset();
+      return false;
+    }
     const savedStrokes = await storage.loadStrokes<Array<Record<string, unknown>>>();
     if (savedQuest.camera) {
       camera.setX(savedQuest.camera.x);
@@ -512,7 +519,6 @@ async function resolveDrawingAttempt(): Promise<void> {
     const tutorialAction = goalId === "draw_shoes"
       ? "equip_shoes"
       : goalId === "draw_fishing_tool" ? "equip_tool" : null;
-    const tutorialSucceeded = tutorialAction !== null && analysis.recognized && analysis.matchesGoal && analysis.mappedAction === tutorialAction;
     if (analysis.recognized || analysis.mappedAction === "ground_erased") {
       succeeded = true;
       pendingDetected = analysis;
@@ -525,7 +531,26 @@ async function resolveDrawingAttempt(): Promise<void> {
         ? analysis.reaction.bubble
         : "دیدمش! بذار ببینم باهاش چی کار می‌شه کرد…";
       const spokenText = looksPersian(analysis.reaction.spoken) ? analysis.reaction.spoken : bubbleText;
-      if (tutorialSucceeded && tutorialAction) {
+      if (goalId === "draw_shoes") {
+        const addedShoes = equipTutorialShoes(analysis, full.mapping);
+        if (shoeProgress.complete) {
+          const successBubble = "آها! حالا هر دو پام کفش دارن؛ بریم!";
+          quest.trigger({
+            type: "drawing_validated",
+            action: "equip_shoes",
+            reactionBubble: successBubble,
+            reactionSpoken: successBubble,
+            emotion: "delighted",
+          });
+        } else if (addedShoes > 0) {
+          const missingText = "آها! حالا پای دیگه‌ام هم یک کفش می‌خواد.";
+          speakStoryText(missingText, missingText, "curious", undefined, "confused");
+          beginAwaitingDrawing(goalId, false);
+        } else {
+          quest.trigger({ type: "drawing_invalid", message: bubbleText });
+          beginAwaitingDrawing(goalId, false);
+        }
+      } else if (tutorialAction !== null && analysis.matchesGoal && analysis.mappedAction === tutorialAction) {
         quest.trigger({
           type: "drawing_validated",
           action: tutorialAction,
@@ -790,6 +815,48 @@ function equipDetectedObjects(analysis: DrawingAnalysis, mapping: CaptureMapping
     pendingDetected = null;
     pendingSourceStrokeIds.clear();
   }
+}
+
+function equipTutorialShoes(analysis: DrawingAnalysis, mapping: CaptureMapping): number {
+  if (!rigRuntime) return 0;
+  const leftWorld = rigRuntime.jointWorld("left_foot");
+  const rightWorld = rigRuntime.jointWorld("right_foot");
+  if (!leftWorld || !rightWorld) return 0;
+  const feet = {
+    left_foot: worldToImage(leftWorld, mapping),
+    right_foot: worldToImage(rightWorld, mapping),
+  };
+  const candidates = normalizeShoeCandidates(analysis.objects, feet, shoeProgress.snapshot());
+  const claimedStrokeIds = new Set<string>();
+  let addedCount = 0;
+  candidates.forEach((candidate, index) => {
+    if (shoeProgress.has(candidate.slot)) return;
+    const allowed = new Set([...pendingSourceStrokeIds].filter((id) => !claimedStrokeIds.has(id)));
+    const object = candidate.object;
+    const objectWithWorld = {
+      ...object,
+      anchor: object.anchor === null
+        ? null
+        : { x: imageToWorldX(object.anchor.x, mapping), y: imageToWorldY(object.anchor.y, mapping) },
+      boundingBox: {
+        x: imageToWorldX(object.boundingBox.x, mapping),
+        y: imageToWorldY(object.boundingBox.y, mapping),
+        width: object.boundingBox.width / mapping.scale,
+        height: object.boundingBox.height / mapping.scale,
+      },
+    };
+    const attachment = buildAttachmentFromObject(objectWithWorld, store, idMap, rigRuntime!, index, allowed, 10);
+    if (!attachment || !shoeProgress.fill(candidate.slot, attachment.id)) return;
+    attachment.sourceStrokeIds.forEach((id) => claimedStrokeIds.add(id));
+    attachments.push(attachment);
+    addedCount++;
+  });
+  if (addedCount > 0) {
+    pendingDetected = null;
+    pendingSourceStrokeIds.clear();
+    diagnostics.info("shoe_progress_updated", { slots: shoeProgress.snapshot(), complete: shoeProgress.complete });
+  }
+  return addedCount;
 }
 
 let lastFullMapping: CaptureMapping | null = null;

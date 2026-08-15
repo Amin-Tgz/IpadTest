@@ -127,9 +127,11 @@ npm start
 
 1. Open the app in landscape orientation on iPad.
 2. Watch the moving ground-line bump rise into the hero.
-3. Draw two shoes when the hero asks, then tap **▶ ببین نقاشی‌مو**.
+3. Draw two shoes when the hero asks, together or one at a time, then tap **▶ ببین نقاشی‌مو**. Each foot accepts exactly one shoe and walking waits for both.
 4. Draw a fishing tool for the second tutorial request.
 5. Continue drawing or writing freely; the hero walks to the result, reacts, and speaks Persian.
+
+Refreshing during the incomplete shoe lesson restarts that lesson with two empty foot slots; completed story progress can still be restored.
 
 Use `?debug=speech` to show a direct voice-test button and forward speech lifecycle events to the server terminal:
 
