@@ -2,6 +2,7 @@ import { z } from "zod";
 import { clampCoord, clampConfidence } from "./skeleton.js";
 
 const MAX_BUBBLE_CHARS = 70;
+const MAX_SPOKEN_CHARS = 100;
 
 export const drawingObjectSchema = z.object({
   type: z.string().min(1).max(40),
@@ -36,8 +37,9 @@ export const drawingAnalysisSchema = z.object({
   mappedAction: z.enum(["equip_shoes", "equip_tool", "answer_question", "ground_erased", "decorate", "react", "none"]).nullable(),
   action: actionRequestSchema.nullable().default(null),
   reaction: z.object({
-    emotion: z.string().max(30).default("neutral"),
+    emotion: z.enum(["curious", "protesting", "confused", "effort", "delighted", "sad"]).default("curious"),
     bubble: z.string().default(""),
+    spoken: z.string().default(""),
   }),
 });
 
@@ -67,5 +69,6 @@ export function sanitizeDrawingAnalysis(
     }
   }
   parsed.reaction.bubble = parsed.reaction.bubble.slice(0, MAX_BUBBLE_CHARS);
+  parsed.reaction.spoken = (parsed.reaction.spoken.trim() || parsed.reaction.bubble).slice(0, MAX_SPOKEN_CHARS);
   return parsed;
 }

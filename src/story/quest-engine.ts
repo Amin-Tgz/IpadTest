@@ -1,9 +1,9 @@
 import type { MotionId } from "../animation/motion-clips.js";
+import type { HeroVoicePreset } from "../character/living-line-hero.js";
 
 export type QuestState =
-  | "DRAW_CHARACTER"
+  | "DORMANT"
   | "SPAWN"
-  | "REQUEST_SHOES"
   | "AWAIT_SHOES"
   | "EQUIP_SHOES"
   | "WALK_TO_POND"
@@ -13,17 +13,28 @@ export type QuestState =
   | "FISHING"
   | "ENDING";
 
+export interface DialogueLine {
+  bubble: string;
+  spoken: string;
+  emotion: HeroVoicePreset;
+}
+
 export type QuestEvent =
-  | { type: "character_alive" }
+  | { type: "hero_ready" }
   | { type: "bubble_shown" }
-  | { type: "drawing_validated"; action: "equip_shoes" | "equip_tool" | null; reactionBubble?: string; emotion?: string }
+  | {
+      type: "drawing_validated";
+      action: "equip_shoes" | "equip_tool";
+      reactionBubble?: string;
+      reactionSpoken?: string;
+      emotion?: HeroVoicePreset;
+    }
   | { type: "drawing_invalid"; message?: string }
-  | { type: "equip_complete" }
   | { type: "walk_complete" }
   | { type: "fish_sequence_done" };
 
 export type StoryCommand =
-  | { type: "bubble"; text: string; emotion: string }
+  | ({ type: "bubble" } & DialogueLine)
   | { type: "anim"; clip: MotionId; loop?: boolean }
   | { type: "await_drawing"; goalId: string }
   | { type: "attach_shoes" }
@@ -31,13 +42,12 @@ export type StoryCommand =
   | { type: "reach_pond" }
   | { type: "attach_rod" }
   | { type: "cast_sequence" }
-  | { type: "fish_jump" }
-  | { type: "fish_talk"; text: string }
   | { type: "ending"; text: string };
 
 export interface QuestDefinition {
   id: string;
-  requests: Array<{ emotion: string; bubble: string }>;
+  prompt: string;
+  requests: DialogueLine[];
   acceptedCategories: string[];
   targetBones: string[];
   successAction: "equip_then_walk" | "equip_then_cast";
@@ -46,9 +56,10 @@ export interface QuestDefinition {
 export const QUESTS: Record<string, QuestDefinition> = {
   draw_shoes: {
     id: "draw_shoes",
+    prompt: "The child should draw two shoes, boots, skates, or slippers for the fixed hero, one near each foot.",
     requests: [
-      { emotion: "uncomfortable", bubble: "این خط برای پای برهنه‌ام خیلی زبره…" },
-      { emotion: "hopeful", bubble: "دو تا کفش بکش؛ یکی برای هر پا." },
+      { emotion: "protesting", bubble: "اِ! این خط برای پای برهنه‌ام خیلی زبره.", spoken: "اِ! این خط برای پای برهنه‌ام خیلی زبره." },
+      { emotion: "curious", bubble: "دو تا کفش برام می‌کشی؟ یکی برای هر پا.", spoken: "هوم... دو تا کفش برام می‌کشی؟ یکی برای هر پا." },
     ],
     acceptedCategories: ["shoe", "boot", "skate", "slipper"],
     targetBones: ["left_foot", "right_foot"],
@@ -56,56 +67,53 @@ export const QUESTS: Record<string, QuestDefinition> = {
   },
   draw_fishing_tool: {
     id: "draw_fishing_tool",
+    prompt: "The child should draw a fishing rod, net, spear, or magnet the fixed hero can hold in the right hand.",
     requests: [
-      { emotion: "curious", bubble: "ته برکه یک ماهی تکان می‌خورد…" },
-      { emotion: "curious", bubble: "یک چوب ماهی‌گیری بکش؛ دسته‌اش نزدیک دست راستم باشد." },
+      { emotion: "curious", bubble: "اوه! توی برکه یک چیزی تکان خورد.", spoken: "اوه! توی برکه یک چیزی تکان خورد." },
+      { emotion: "protesting", bubble: "با دست خالی که نمی‌شه! یک ابزار برام بکش.", spoken: "اِ... با دست خالی که نمی‌شه! یک ابزار برام بکش." },
     ],
-    acceptedCategories: ["fishing_rod", "net"],
+    acceptedCategories: ["fishing_rod", "net", "spear", "magnet"],
     targetBones: ["right_hand"],
     successAction: "equip_then_cast",
   },
 };
 
 const SHOES_FAILURES = [
-  "پای دیگه‌ام داره حسودی می‌کنه.",
-  "فکر کنم باید یکم نزدیک‌تر پام باشه.",
-  "این کفشه یا سیب‌زمینی؟ یه بند هم براش می‌کشی؟",
+  "هوم... پای دیگه‌ام هم کفش می‌خواد.",
+  "اِ، این یکی کمی از پام دوره.",
+  "این کفشه یا سیب‌زمینی؟ یک بند هم براش می‌کشی؟",
 ];
 const TOOL_FAILURES = [
-  "هوم… با این که قلاب درست کنیم، سخت می‌شه.",
-  "این چیزی بود یا یک خط اشتباهی؟",
+  "هوم... گرفتن ماهی با این یکی سخت می‌شه.",
+  "اِ؟ یک دسته یا قلاب هم بهش اضافه کن.",
 ];
 
-function pick(arr: string[]): string {
-  return arr[Math.floor(Math.random() * arr.length)];
+function pick(lines: string[]): string {
+  return lines[Math.floor(Math.random() * lines.length)];
 }
 
 export class QuestEngine {
-  state: QuestState = "DRAW_CHARACTER";
+  state: QuestState = "DORMANT";
   onCommand: (command: StoryCommand) => void = () => void 0;
-  private bubbleQueue: string[] = [];
-  private bubbleEmotions: string[] = [];
+  private bubbleQueue: DialogueLine[] = [];
+  private pendingDone: (() => void) | null = null;
 
   restore(state: QuestState): void {
     this.state = state;
     this.bubbleQueue = [];
-    this.bubbleEmotions = [];
     this.pendingDone = null;
   }
 
   trigger(event: QuestEvent): void {
     switch (this.state) {
-      case "DRAW_CHARACTER":
-        if (event.type === "character_alive") {
+      case "DORMANT":
+        if (event.type === "hero_ready") {
           this.state = "SPAWN";
           this.playAnim("spawn");
-          this.queueBubbles(
-            QUESTS.draw_shoes.requests.map((r) => ({ text: r.bubble, emotion: r.emotion })),
-            () => {
-              this.state = "AWAIT_SHOES";
-              this.command({ type: "await_drawing", goalId: "draw_shoes" });
-            },
-          );
+          this.queueBubbles(QUESTS.draw_shoes.requests, () => {
+            this.state = "AWAIT_SHOES";
+            this.command({ type: "await_drawing", goalId: "draw_shoes" });
+          });
         }
         break;
 
@@ -114,25 +122,23 @@ export class QuestEngine {
         break;
 
       case "AWAIT_SHOES":
-        if (event.type === "drawing_validated") {
+        if (event.type === "drawing_validated" && event.action === "equip_shoes") {
           this.state = "EQUIP_SHOES";
           this.command({ type: "attach_shoes" });
           this.playAnim("happy");
-          this.queueBubbles(
-            [
-              { text: event.reactionBubble ?? "وای! خیلی خوبه! حالا می‌تونم راه برم!", emotion: event.emotion ?? "excited" },
-            ],
-            () => {
-              this.command({ type: "start_walk" });
-              this.state = "WALK_TO_POND";
+          this.queueBubbles([
+            {
+              bubble: event.reactionBubble ?? "آها! این شد یک کفش حسابی؛ بریم!",
+              spoken: event.reactionSpoken ?? "آها! این شد یک کفش حسابی؛ بریم!",
+              emotion: event.emotion ?? "delighted",
             },
-          );
-        } else if (event.type === "drawing_invalid") {
-          this.command({
-            type: "bubble",
-            text: event.message ?? pick(SHOES_FAILURES),
-            emotion: "confused",
+          ], () => {
+            this.command({ type: "start_walk" });
+            this.state = "WALK_TO_POND";
           });
+        } else if (event.type === "drawing_invalid") {
+          const text = event.message ?? pick(SHOES_FAILURES);
+          this.command({ type: "bubble", bubble: text, spoken: text, emotion: "confused" });
         }
         break;
 
@@ -144,16 +150,10 @@ export class QuestEngine {
         if (event.type === "walk_complete") {
           this.state = "REQUEST_TOOL";
           this.playAnim("stop_at_pond");
-          this.queueBubbles(
-            [
-              { text: "آه… آب! اونجا چیزی پرید!", emotion: "curious" },
-              ...QUESTS.draw_fishing_tool.requests.map((r) => ({ text: r.bubble, emotion: r.emotion })),
-            ],
-            () => {
-              this.state = "AWAIT_TOOL";
-              this.command({ type: "await_drawing", goalId: "draw_fishing_tool" });
-            },
-          );
+          this.queueBubbles(QUESTS.draw_fishing_tool.requests, () => {
+            this.state = "AWAIT_TOOL";
+            this.command({ type: "await_drawing", goalId: "draw_fishing_tool" });
+          });
         }
         break;
 
@@ -162,24 +162,22 @@ export class QuestEngine {
         break;
 
       case "AWAIT_TOOL":
-        if (event.type === "drawing_validated") {
+        if (event.type === "drawing_validated" && event.action === "equip_tool") {
           this.state = "EQUIP_TOOL";
           this.command({ type: "attach_rod" });
-          this.queueBubbles(
-            [
-              { text: event.reactionBubble ?? "آفرین! حالا ببین چطور ماهی می‌گیرم!", emotion: event.emotion ?? "excited" },
-            ],
-            () => {
-              this.command({ type: "cast_sequence" });
-              this.state = "FISHING";
+          this.queueBubbles([
+            {
+              bubble: event.reactionBubble ?? "آها! حالا ببین چطور ماهی می‌گیرم!",
+              spoken: event.reactionSpoken ?? "آها! حالا ببین چطور ماهی می‌گیرم!",
+              emotion: event.emotion ?? "delighted",
             },
-          );
-        } else if (event.type === "drawing_invalid") {
-          this.command({
-            type: "bubble",
-            text: event.message ?? pick(TOOL_FAILURES),
-            emotion: "confused",
+          ], () => {
+            this.command({ type: "cast_sequence" });
+            this.state = "FISHING";
           });
+        } else if (event.type === "drawing_invalid") {
+          const text = event.message ?? pick(TOOL_FAILURES);
+          this.command({ type: "bubble", bubble: text, spoken: text, emotion: "confused" });
         }
         break;
 
@@ -190,16 +188,10 @@ export class QuestEngine {
       case "FISHING":
         if (event.type === "fish_sequence_done") {
           this.state = "ENDING";
-          this.queueBubbles(
-            [
-              { text: "من خیلی کوچیکم!", emotion: "tiny" },
-              { text: "…", emotion: "thoughtful" },
-              { text: "ادامهٔ این خط را تو می‌کشی.", emotion: "warm" },
-            ],
-            () => {
-              this.command({ type: "ending", text: "" });
-            },
-          );
+          this.queueBubbles([
+            { bubble: "این ماهی از کفش‌هام هم کوچیک‌تره!", spoken: "اِ؟ این ماهی از کفش‌هام هم کوچیک‌تره!", emotion: "protesting" },
+            { bubble: "آها! حالا هرچی دوست داری بکش؛ من هم می‌آم.", spoken: "آها! حالا هرچی دوست داری بکش؛ من هم می‌آم.", emotion: "delighted" },
+          ], () => this.command({ type: "ending", text: "حالا نوبت دنیای توست." }));
         }
         break;
 
@@ -209,28 +201,21 @@ export class QuestEngine {
     }
   }
 
-  private queueBubbles(
-    bubbles: Array<{ text: string; emotion: string }>,
-    onDone: () => void,
-  ): void {
-    this.bubbleQueue = bubbles.map((b) => b.text);
-    this.bubbleEmotions = bubbles.map((b) => b.emotion);
+  private queueBubbles(lines: DialogueLine[], onDone: () => void): void {
+    this.bubbleQueue = lines.map((line) => ({ ...line }));
     this.pendingDone = onDone;
     this.emitNextBubble();
   }
 
-  private pendingDone: (() => void) | null = null;
-
   private emitNextBubble(): void {
-    const text = this.bubbleQueue.shift();
-    const emotion = this.bubbleEmotions.shift() ?? "neutral";
-    if (text === undefined) {
+    const line = this.bubbleQueue.shift();
+    if (!line) {
       const done = this.pendingDone;
       this.pendingDone = null;
-      if (done) done();
+      done?.();
       return;
     }
-    this.command({ type: "bubble", text, emotion });
+    this.command({ type: "bubble", ...line });
   }
 
   private advanceBubbles(): void {

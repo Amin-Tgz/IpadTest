@@ -11,7 +11,7 @@ const envSchema = z.object({
   AI_THINKING_LEVEL: z.enum(["low", "medium", "high"]).default("low"),
   TTS_MODEL: z.string().min(1).default("gemini-2.5-flash-tts"),
   TTS_VOICE: z.string().min(1).default("Leda"),
-  TTS_STYLE: z.string().min(1).default("با صدایی کودکانه، گرم، بازیگوش، طبیعی و به فارسی معیار ایران"),
+  TTS_STYLE: z.string().min(1).default("با صدایی جوان، بی‌طرف، گرم و کمی خش‌دار؛ اندکی تو دماغی، بازیگوش، طبیعی و به فارسی معیار ایران"),
 });
 
 export type ServerConfig = z.infer<typeof envSchema>;

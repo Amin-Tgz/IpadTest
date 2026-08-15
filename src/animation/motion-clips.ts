@@ -3,6 +3,8 @@ import type { JointId } from "../app/constants.js";
 export type MotionId =
   | "spawn"
   | "idle"
+  | "protest"
+  | "effort"
   | "happy"
   | "confused"
   | "scratch_head"
@@ -75,15 +77,20 @@ export function evaluateMotion(clip: MotionClip, timeMs: number): Pose {
 export const MOTION_CLIPS: Record<MotionId, MotionClip> = {
   spawn: {
     id: "spawn",
-    durationMs: 950,
+    durationMs: 1150,
     loop: false,
-    jointTracks: {},
+    jointTracks: {
+      torso: track([[0, 12], [0.32, -8], [0.55, 5], [0.78, -2], [1, 0]]),
+      head: track([[0, -10], [0.35, 7], [0.62, -4], [1, 0]]),
+      left_shoulder: track([[0, 30], [0.42, -20], [0.72, 8], [1, 0]]),
+      right_shoulder: track([[0, -30], [0.42, 20], [0.72, -8], [1, 0]]),
+    },
     rootY: track([
-      [0, 0],
-      [0.16, -8],
-      [0.42, -42],
-      [0.7, 0],
-      [0.82, -12],
+      [0, 76],
+      [0.18, 58],
+      [0.46, -9],
+      [0.68, 5],
+      [0.84, -2],
       [1, 0],
     ]),
   },
@@ -118,6 +125,35 @@ export const MOTION_CLIPS: Record<MotionId, MotionClip> = {
       [0.5, -1.6],
       [1, 0],
     ]),
+  },
+  protest: {
+    id: "protest",
+    durationMs: 1250,
+    loop: false,
+    jointTracks: {
+      head: track([[0, 0], [0.18, -12], [0.36, 9], [0.54, -10], [0.72, 7], [1, 0]]),
+      torso: track([[0, 0], [0.22, -7], [0.62, 4], [1, 0]]),
+      left_shoulder: track([[0, 0], [0.25, -58], [0.55, -42], [1, 0]]),
+      right_shoulder: track([[0, 0], [0.25, 52], [0.55, 37], [1, 0]]),
+      left_elbow: track([[0, 0], [0.3, -28], [0.7, -15], [1, 0]]),
+      right_elbow: track([[0, 0], [0.3, 24], [0.7, 13], [1, 0]]),
+    },
+    rootY: track([[0, 0], [0.22, -5], [0.48, 2], [1, 0]]),
+    rootRotation: track([[0, 0], [0.25, -4], [0.55, 3], [1, 0]]),
+  },
+  effort: {
+    id: "effort",
+    durationMs: 900,
+    loop: true,
+    jointTracks: {
+      torso: track([[0, -5], [0.5, 7], [1, -5]]),
+      head: track([[0, 4], [0.5, -3], [1, 4]]),
+      left_shoulder: track([[0, -24], [0.5, -38], [1, -24]]),
+      right_shoulder: track([[0, 24], [0.5, 38], [1, 24]]),
+      left_elbow: track([[0, -12], [0.5, 8], [1, -12]]),
+      right_elbow: track([[0, 12], [0.5, -8], [1, 12]]),
+    },
+    rootY: track([[0, 0], [0.5, 3], [1, 0]]),
   },
   happy: {
     id: "happy",

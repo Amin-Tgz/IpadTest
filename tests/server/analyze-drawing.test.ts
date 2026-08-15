@@ -30,7 +30,7 @@ const validDrawing = {
   ],
   interpretation: "A pair of boots",
   mappedAction: "equip_shoes",
-  reaction: { emotion: "excited", bubble: "وای! عالی‌اند!" },
+  reaction: { emotion: "delighted", bubble: "وای! عالی‌اند!", spoken: "آها! عالی‌اند!" },
 };
 
 describe("POST /api/drawing/analyze", () => {
@@ -103,7 +103,7 @@ describe("POST /api/drawing/analyze", () => {
           ...validDrawing,
           matchesGoal: false,
           mappedAction: "none",
-          reaction: { emotion: "confused", bubble: "این کفشه یا سیب‌زمینی؟" },
+          reaction: { emotion: "confused", bubble: "این کفشه یا سیب‌زمینی؟", spoken: "هوم... این کفشه یا سیب‌زمینی؟" },
         }),
         rawModel: "mock",
       },

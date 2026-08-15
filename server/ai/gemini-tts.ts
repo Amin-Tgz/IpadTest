@@ -18,8 +18,19 @@ export interface SpeechAudio {
   cacheHit: boolean;
 }
 
+export type VoicePreset = "curious" | "protesting" | "confused" | "effort" | "delighted" | "sad";
+
+const PRESET_STYLE: Record<VoicePreset, string> = {
+  curious: "کنجکاو، نرم و کمی پرسشگر",
+  protesting: "اعتراض‌آمیز و بامزه، با ریتم تند ولی مهربان",
+  confused: "مردد، با مکث کوتاه و لحن متعجب",
+  effort: "با انرژی و کمی تقلا در صدا",
+  delighted: "خوشحال، گرم و با جهش کوتاه در زیر و بمی",
+  sad: "آرام، دلخور و دوست‌داشتنی، بدون اغراق",
+};
+
 export interface SpeechGenerator {
-  generate(text: string): Promise<SpeechAudio>;
+  generate(text: string, preset?: VoicePreset): Promise<SpeechAudio>;
 }
 
 export function pcmToWav(pcm: Buffer, sampleRate = 24_000, channels = 1, bitsPerSample = 16): Buffer {
@@ -51,9 +62,9 @@ export class GeminiSpeechGenerator implements SpeechGenerator {
     this.endpoint = `${nativeBase}/v1beta/models/${encodeURIComponent(config.TTS_MODEL)}:generateContent`;
   }
 
-  async generate(text: string): Promise<SpeechAudio> {
+  async generate(text: string, preset: VoicePreset = "curious"): Promise<SpeechAudio> {
     const key = createHash("sha256")
-      .update(`${this.config.TTS_MODEL}\0${this.config.TTS_VOICE}\0${this.config.TTS_STYLE}\0${text}`)
+      .update(`${this.config.TTS_MODEL}\0${this.config.TTS_VOICE}\0${this.config.TTS_STYLE}\0${preset}\0${text}`)
       .digest("hex");
     const cached = this.cache.get(key);
     if (cached) return { bytes: cached, contentType: "audio/wav", cacheHit: true };
@@ -66,7 +77,7 @@ export class GeminiSpeechGenerator implements SpeechGenerator {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: `${this.config.TTS_STYLE} بگو: ${text}` }] }],
+        contents: [{ parts: [{ text: `${this.config.TTS_STYLE} شخصیت یک قهرمان خطی مستقل و بازیگوش است؛ تقلید صدای شخصیت شناخته‌شده‌ای نباشد. با حالت ${PRESET_STYLE[preset]} بگو: ${text}` }] }],
         generationConfig: {
           responseModalities: ["AUDIO"],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.config.TTS_VOICE } } },
@@ -89,6 +100,7 @@ export class GeminiSpeechGenerator implements SpeechGenerator {
     console.info("[pencil-ai] tts_generated", {
       model: this.config.TTS_MODEL,
       voice: this.config.TTS_VOICE,
+      preset,
       textLength: text.length,
       audioBytes: wav.length,
       elapsedMs: Date.now() - startedAt,

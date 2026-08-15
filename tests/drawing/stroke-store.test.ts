@@ -35,6 +35,15 @@ describe("stroke-store", () => {
     expect(store.count()).toBe(2);
   });
 
+  it("can limit undo to child-authored ink", () => {
+    const store = new StrokeStore();
+    store.add({ ...makeStroke("hero"), entityId: "living_line_hero" });
+    store.add(makeStroke("child"));
+    expect(store.undo((stroke) => stroke.entityId === null)?.id).toBe("child");
+    expect(store.undo((stroke) => stroke.entityId === null)).toBeUndefined();
+    expect(store.byId("hero")?.active).toBe(true);
+  });
+
   it("setInactiveFrom deactivates all strokes from index", () => {
     const store = new StrokeStore();
     store.add(makeStroke("a"));

@@ -75,8 +75,8 @@ export class StrokeStore {
     if (stroke) stroke.entityId = entityId;
   }
 
-  undo(): Stroke | undefined {
-    const last = [...this.strokes].reverse().find((stroke) => stroke.active);
+  undo(filter: (stroke: Stroke) => boolean = () => true): Stroke | undefined {
+    const last = [...this.strokes].reverse().find((stroke) => stroke.active && filter(stroke));
     if (!last) return undefined;
     last.active = false;
     this.onRemove.forEach((fn) => fn(last));

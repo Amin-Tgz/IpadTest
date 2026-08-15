@@ -1,6 +1,6 @@
 # CLAUDE.md — Pencil AI
 
-Pencil AI is a line-drawing adventure for iPad Safari: the user draws a character with Apple Pencil, AI detects joints as JSON, the character comes alive and the story is told through drawing only (draw shoes, draw a fishing rod). No voice, no buttons beyond a minimum.
+Pencil AI is a line-drawing adventure for iPad Safari: an original authored living-line hero rises from the ground, then the child uses Apple Pencil to draw solutions such as shoes, tools, and world objects. The fixed hero has deterministic animation, reliable semantic anchors, short Persian speech bubbles, and generated Persian voice.
 
 Product spec: `plan.md`. Platform/security rules: `rules.md`. Progress log: `docs.md`.
 
@@ -51,6 +51,7 @@ client (src/)                 server (server/)
 Principles (from plan §6.1):
 
 - AI understands; the animation engine executes. AI never produces frames/transforms.
+- The authored hero is fixed; normal startup never analyzes a child-drawn body or exposes joints.
 - User strokes are sacred — never replaced by generated images.
 - Coordinates are stored in world space; camera transforms to screen.
 - Raw stroke points are never overwritten; resampled copies are used for rigging.

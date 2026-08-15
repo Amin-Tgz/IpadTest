@@ -25,6 +25,14 @@ describe("evaluateMotion", () => {
     expect(pose.jointRotations.left_shoulder).toBeLessThan(-80);
     expect(pose.jointRotations.right_shoulder).toBeGreaterThan(80);
   });
+
+  it("gives protest and effort distinct authored silhouettes", () => {
+    const protest = evaluateMotion(MOTION_CLIPS.protest, MOTION_CLIPS.protest.durationMs * 0.3);
+    const effort = evaluateMotion(MOTION_CLIPS.effort, MOTION_CLIPS.effort.durationMs * 0.5);
+    expect(protest.jointRotations.left_shoulder).toBeLessThan(-40);
+    expect(effort.jointRotations.left_shoulder).toBeLessThan(-30);
+    expect(effort.jointRotations.right_shoulder).toBeGreaterThan(30);
+  });
 });
 
 describe("AnimationController", () => {

@@ -56,7 +56,7 @@ Living document. Each plan phase ends with: test result, commit hash, notes, ope
 
 ## Phase 7 — Polish (done)
 
-- PWA: `manifest.webmanifest` (fullscreen, landscape), SVG icon, `sw.js` (cache-first for static, never /api), registered in prod.
+- PWA: `manifest.webmanifest` (fullscreen, landscape), SVG icon, and `sw.js` registered in production. Navigations are network-first so new releases reach installed iPads; hashed static assets remain cache-first and `/api` is never cached.
 - Session persistence: strokes (debounced) + manifest + quest state in IndexedDB; restore on reload → character re-rigged, story resumes at the pending request.
 - Reset button (↺): clears session + reloads. Thinking animation (confused) during analysis; idle after failure.
 - Build fix: server emits to `server/dist/` (`rootDir`), static served from `process.cwd()/dist`; separate `tsconfig.tests.json` for typecheck.
@@ -65,8 +65,9 @@ Living document. Each plan phase ends with: test result, commit hash, notes, ope
 ## Notes / Open questions
 
 - AI latency: character analyze ~20s first call (fallback double-call); drawing analyze ~10-15s. Perceived wait covered by confused anim + look; further tuning via AI_JSON_MODE/AI_THINKING_LEVEL or a faster model in `.env`.
-- AI Persian bubbles came back garbled from the provider (?) — guarded client-side with Persian fallbacks; story-critical bubbles are hardcoded Persian in the engine.
-- iPad touch testing not possible in this environment — verify Pencil flow on device (pressure, eraser, fullscreen).
+- Gemini TTS takes several seconds on a cache miss. Repeated lines use an in-memory WAV cache; pre-generation/streaming remains a possible latency improvement.
+- AI Persian bubbles are guarded client-side with Persian fallbacks; story-critical bubbles are hardcoded Persian in the engine.
+- Generated Persian audio playback is verified on-device. Pencil pressure, eraser feel, and long-session fullscreen behavior still need continued iPad testing.
 - Plan §31 Test C (shoe loop) passed end-to-end with real provider images; on-device delight check remains.
 
 ## Repair checkpoint — core interaction and transform ownership
@@ -81,30 +82,6 @@ Living document. Each plan phase ends with: test result, commit hash, notes, ope
 - Server configuration is loaded at app creation rather than module import; response-format mode honors `AI_JSON_MODE` on its first attempt.
 
 
-## Phase 2 — Joint Editor (planned)
-
-Draggable joints, ID map, manifest persistence.
-
-## Phase 3 — Rig Runtime (planned)
-
-Segmentation, rigid transforms, idle/blink/look/walk.
-
-## Phase 4 — Story Shell (planned)
-
-Quest engine, camera, pond, hardcoded objects, ending.
-
-## Phase 5 — Shoe Recognition (planned)
-
-Checkpoints, delta crop, attachment, reactions.
-
-## Phase 6 — Fishing Tool Recognition (planned)
-
-Rod attach, cast animation, fish sequence.
-
-## Phase 7 — Polish (planned)
-
-PWA fullscreen, session reset, perf.
-
 ## Phaser living-world checkpoint
 
 - Phaser 4.2.1 owns the Canvas frame lifecycle, camera bridge, input surface, and Matter physics world while preserving pressure-sensitive Pencil strokes.
@@ -116,8 +93,19 @@ PWA fullscreen, session reset, perf.
 
 ## Drawing reaction movement and speech checkpoint
 
-- Safari speech synthesis is unlocked from a direct button tap before asynchronous AI responses speak.
 - Recognized free-play drawings remain visible; the character walks beyond the drawing's right edge before performing and speaking its reaction.
 - The baseline and its Matter collision floor extend ahead of the camera, preserving continuous walking as the world scrolls.
 - Persian speech now uses server-generated Gemini Flash TTS (`gemini-2.5-flash-tts`, `Leda`) instead of device voices. The server converts 24 kHz PCM to WAV, caches repeated lines in memory, and the client plays through a tap-unlocked Web Audio context on iPad Safari.
 - `TTS_MODEL`, `TTS_VOICE`, and `TTS_STYLE` provide voice and performance control without exposing provider credentials to the client.
+- Speech lifecycle diagnostics cover generation, Web Audio context state, playback start/end, and provider failures. `?debug=speech` exposes a direct voice test and forwards diagnostics to the server terminal.
+- Verified on iPad: generated Persian voice is audible without installing a Farsi system voice.
+- Verification at commit `d2002cd`: typecheck passed, 31 test files / 155 tests passed, production build passed, real Gemini TTS returned valid 24 kHz WAV, and repeated requests hit the in-memory cache.
+
+## Original living-line hero checkpoint
+
+- Normal startup now shows a moving bump in the ground line and raises one authored, unnamed hero; character drawing, AI body analysis, joint setup, and segment repair are absent from the user journey.
+- The hero uses fixed spline-sampled paths, 16 reliable semantic anchors, curved runtime limbs, distance-synchronized walking, and new protest/effort motion clips.
+- The shoe and fishing tutorial is wired into the live drawing-analysis flow before open-ended free play. Prototype sessions without schema version 3 reset instead of restoring obsolete character manifests.
+- Reactions now carry a controlled emotion, separate Persian `bubble` and `spoken` strings, and a non-blocking audio fallback. Tutorial voice lines preload into a client/server cache when available.
+- The legacy character-analysis route is opt-in with `ENABLE_LEGACY_CHARACTER_ANALYSIS=1`; it is not registered in normal startup.
+- Verification: strict typecheck passed, 32 test files / 163 tests passed, production build passed, and offline Playwright checks covered the intro bump, tutorial bubbles, DPR 1/2 rendering, Pencil/mouse shoe strokes, and review-button reveal.

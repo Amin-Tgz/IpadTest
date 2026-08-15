@@ -12,7 +12,7 @@ describe("QuestEngine", () => {
     const engine = new QuestEngine();
     const commands = collectCommands(engine);
 
-    engine.trigger({ type: "character_alive" });
+    engine.trigger({ type: "hero_ready" });
     expect(commands[0]).toMatchObject({ type: "anim", clip: "spawn" });
     expect(commands[1]).toMatchObject({ type: "bubble" });
 
@@ -53,19 +53,31 @@ describe("QuestEngine", () => {
   it("stays awaiting shoes when drawing is invalid", () => {
     const engine = new QuestEngine();
     const commands = collectCommands(engine);
-    engine.trigger({ type: "character_alive" });
+    engine.trigger({ type: "hero_ready" });
     engine.trigger({ type: "bubble_shown" });
     engine.trigger({ type: "bubble_shown" });
 
     engine.trigger({ type: "drawing_invalid", message: "این کفشه یا سیب‌زمینی؟" });
     expect(engine.state).toBe("AWAIT_SHOES");
-    expect(commands.some((c) => c.type === "bubble" && c.text.includes("سیب‌زمینی"))).toBe(true);
+    expect(commands.some((c) => c.type === "bubble" && c.bubble.includes("سیب‌زمینی"))).toBe(true);
   });
 
   it("ignores unknown events in states", () => {
     const engine = new QuestEngine();
     collectCommands(engine);
     engine.trigger({ type: "walk_complete" });
-    expect(engine.state).toBe("DRAW_CHARACTER");
+    expect(engine.state).toBe("DORMANT");
+  });
+
+  it("keeps visible and spoken Persian separate", () => {
+    const engine = new QuestEngine();
+    const commands = collectCommands(engine);
+    engine.trigger({ type: "hero_ready" });
+    const line = commands.find((command) => command.type === "bubble");
+    expect(line).toMatchObject({ type: "bubble", emotion: "protesting" });
+    if (line?.type === "bubble") {
+      expect(line.bubble.length).toBeGreaterThan(0);
+      expect(line.spoken.length).toBeGreaterThanOrEqual(line.bubble.length);
+    }
   });
 });

@@ -282,7 +282,7 @@ export class RigRuntime {
       return -1;
     };
 
-    return this.rig.strokes.map((stroke, strokeIndex) =>
+    const transformed = this.rig.strokes.map((stroke, strokeIndex) =>
       stroke.points.map((point) => {
         const transformed = this.transformPoint(point);
         const groupIndex = groupIndexOf(point, strokeIndex);
@@ -299,6 +299,22 @@ export class RigRuntime {
         };
       }),
     );
+    const authoredLimbs: Array<[string, JointId, JointId, JointId]> = [
+      ["hero_left_arm", "left_shoulder", "left_elbow", "left_hand"],
+      ["hero_right_arm", "right_shoulder", "right_elbow", "right_hand"],
+      ["hero_left_leg", "left_hip", "left_knee", "left_foot"],
+      ["hero_right_leg", "right_hip", "right_knee", "right_foot"],
+    ];
+    for (const [strokeId, startId, middleId, endId] of authoredLimbs) {
+      const strokeIndex = this.rig.strokes.findIndex((stroke) => stroke.id === strokeId);
+      if (strokeIndex < 0) continue;
+      const start = transformed[strokeIndex]?.[0] ?? this.jointWorld(startId);
+      const middle = this.jointWorld(middleId);
+      const end = this.jointWorld(endId);
+      if (!start || !middle || !end) continue;
+      transformed[strokeIndex] = smoothLimb(start, middle, end, this.rig.strokes[strokeIndex].points.length);
+    }
+    return transformed;
   }
 
   private faceOffset(
@@ -367,4 +383,25 @@ export class RigRuntime {
   worldToLocal(point: { x: number; y: number }): { x: number; y: number } {
     return inverseTransformWorldPoint(point, this.rig.transform);
   }
+}
+
+function smoothLimb(
+  start: { x: number; y: number },
+  middle: { x: number; y: number },
+  end: { x: number; y: number },
+  count: number,
+): Array<{ x: number; y: number }> {
+  const control = {
+    x: 2 * middle.x - (start.x + end.x) / 2,
+    y: 2 * middle.y - (start.y + end.y) / 2,
+  };
+  const pointCount = Math.max(8, count);
+  return Array.from({ length: pointCount }, (_, index) => {
+    const t = index / (pointCount - 1);
+    const u = 1 - t;
+    return {
+      x: u * u * start.x + 2 * u * t * control.x + t * t * end.x,
+      y: u * u * start.y + 2 * u * t * control.y + t * t * end.y,
+    };
+  });
 }

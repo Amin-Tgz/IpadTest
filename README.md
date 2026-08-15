@@ -1,0 +1,178 @@
+# Pencil AI
+
+Pencil AI is a line-drawing adventure designed for iPad and Apple Pencil. An original living-line hero rises from the ground, then a child draws the shoes, tools, obstacles, and scenery that help it move through the world.
+
+The central rule is simple: **the child's solution strokes stay the artwork**. AI understands the drawing; an authored hero, deterministic animation, and physics execute the result.
+
+## What it does
+
+- Captures pressure-sensitive Apple Pencil strokes in world coordinates.
+- Starts immediately with a fixed, original line hero—no body analysis or joint editor.
+- Animates authored spline paths for idle, blink, look, talk, protest, effort, reaction, and walking.
+- Understands later drawings such as clothing, tools, platforms, stairs, obstacles, symbols, and scene objects.
+- Keeps recognized drawings visible and walks the character beyond the drawing's right edge before reacting.
+- Extends the white ground line and its Matter physics floor as the camera moves.
+- Generates a controllable Persian character voice with six consistent performance presets and separate bubble/spoken text.
+- Persists strokes, character data, attachments, world entities, camera, and story state in IndexedDB.
+- Installs as a fullscreen landscape PWA.
+
+## Current status
+
+The complete prototype pipeline is implemented through the polish phase. The latest verified baseline is:
+
+- TypeScript strict typecheck passing
+- 32 Vitest files and 163 tests passing
+- Production build passing
+- Real character/drawing analysis smoke-tested
+- Gemini Persian TTS and Web Audio playback verified on iPad
+
+See [docs.md](docs.md) for the phase-by-phase development log and [plan.md](plan.md) for the full product specification.
+
+## Technology
+
+| Area | Stack |
+| --- | --- |
+| Client | TypeScript, Vite, Canvas 2D, Phaser 4, Matter physics |
+| Drawing | Pointer Events, Apple Pencil pressure, perfect-freehand |
+| Animation | Custom joint rig, FK transforms, IK helpers, motion clips |
+| Server | Node.js, Express, TypeScript, Zod |
+| AI analysis | OpenAI-compatible multimodal provider |
+| Voice | Gemini Flash TTS, PCM-to-WAV conversion, Web Audio |
+| Storage | IndexedDB |
+| Tests | Vitest, fake-indexeddb |
+
+## Architecture
+
+```text
+src/
+  ai/           scene capture, schemas, normalization, API client
+  animation/    motion clips and animation controller
+  app/          bootstrap, state, controls, diagnostics
+  character/    analysis editor, manifest, rig, runtime, attachments
+  drawing/      pointer input, stroke storage, rendering, ID map
+  storage/      IndexedDB session persistence
+  story/        quest engine, bubbles, generated speech playback
+  world/        Phaser/Matter bridge, camera, entities, ground, walking
+
+server/
+  ai/           provider adapter, prompts, validation, Gemini TTS
+  routes/       character analysis, drawing analysis, speech, config
+  middleware/   rate limiting
+```
+
+Client requests never contain provider credentials. Character and drawing interpretation happen on the server, while animation frames, transforms, navigation, and collisions remain deterministic on the client.
+
+## Requirements
+
+- Node.js 20 or newer
+- npm
+- An AI provider key
+- A provider endpoint that supports:
+  - OpenAI-compatible chat completions for visual analysis
+  - Gemini native `v1beta` audio generation for Gemini TTS
+
+The current setup is tested with AvalAI, which exposes both API shapes through one server-side key.
+
+## Setup
+
+```bash
+npm install
+```
+
+Copy `.env.example` to `.env` and configure it:
+
+```env
+PORT=3456
+AI_BASE_URL=https://api.example.com/v1
+AI_API_KEY=your-server-side-key
+AI_MODEL=gemini-3.7-flash
+
+AI_TIMEOUT_MS=30000
+AI_MAX_RETRIES=2
+AI_JSON_MODE=json_schema
+AI_THINKING_LEVEL=low
+ENABLE_LEGACY_CHARACTER_ANALYSIS=0
+
+TTS_MODEL=gemini-2.5-flash-tts
+TTS_VOICE=Leda
+TTS_STYLE=با صدایی جوان، بی‌طرف، گرم و کمی خش‌دار؛ اندکی تو دماغی، بازیگوش، طبیعی و به فارسی معیار ایران
+```
+
+`AI_API_KEY` is read only by the Express server. Do not expose it through Vite variables or commit `.env`.
+
+## Development
+
+Run the Vite client and Express server together:
+
+```bash
+npm run dev
+```
+
+- Client: `http://localhost:5173`
+- Server: the `PORT` configured in `.env`
+- Vite proxies `/api` requests to the server during development.
+
+Useful commands:
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm start
+```
+
+`npm start` serves the production client from `dist/` using the compiled Express server.
+
+## Using the app
+
+1. Open the app in landscape orientation on iPad.
+2. Watch the moving ground-line bump rise into the hero.
+3. Draw two shoes when the hero asks, then tap **▶ ببین نقاشی‌مو**.
+4. Draw a fishing tool for the second tutorial request.
+5. Continue drawing or writing freely; the hero walks to the result, reacts, and speaks Persian.
+
+Use `?debug=speech` to show a direct voice-test button and forward speech lifecycle events to the server terminal:
+
+```text
+http://localhost:3456/?debug=speech
+```
+
+## Generated voice
+
+Speech is generated by `TTS_MODEL` on the server. The voice is prompted as an original youthful, warm-raspy line hero and receives one of six performance presets: curious, protesting, confused, effort, delighted, or sad. Change `TTS_VOICE` or `TTS_STYLE` to tune it without changing client code.
+
+Gemini returns 24 kHz PCM audio. The server validates the AI response, wraps PCM as WAV, and keeps up to 48 repeated lines in memory. The client uses one tap-unlocked Web Audio context so delayed responses can play reliably on iPad Safari.
+
+## API overview
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/health` | Server health check |
+| `GET` | `/api/config/public` | Safe public capabilities |
+| `POST` | `/api/drawing/analyze` | Interpret new drawing strokes and select an action |
+| `POST` | `/api/speech` | Generate and return Persian WAV audio |
+
+The old `/api/character/analyze` route is disabled by default. Set `ENABLE_LEGACY_CHARACTER_ANALYSIS=1` only for development comparison and open `?debug=character` in the Vite client.
+
+AI outputs are validated with Zod, request sizes are limited, analysis and speech routes are rate-limited, and generated speech text is capped at 200 characters.
+
+## Design principles
+
+- User strokes are never replaced by generated images.
+- Raw stroke points are not overwritten.
+- AI returns meaning and structured intent—not animation frames.
+- Coordinates are stored in world space and transformed through the camera.
+- Story art uses warm white line work on petroleum blue.
+- Persian UI stays minimal, playful, and suitable for children.
+- Failures remain in character instead of showing dry technical errors.
+
+## Documentation
+
+- [CLAUDE.md](CLAUDE.md) — repository conventions and architecture summary
+- [docs.md](docs.md) — implementation progress and verification notes
+- [plan.md](plan.md) — product and engineering specification
+- [rules.md](rules.md) — platform and security rules
+
+## License
+
+No license has been added yet. Add one before distributing or accepting external contributions.

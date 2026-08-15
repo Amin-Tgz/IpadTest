@@ -43,10 +43,11 @@ export const DRAWING_JSON_SCHEMA = {
     reaction: {
       type: "object",
       properties: {
-        emotion: { type: "string" },
+        emotion: { type: "string", enum: ["curious", "protesting", "confused", "effort", "delighted", "sad"] },
         bubble: { type: "string" },
+        spoken: { type: "string" },
       },
-      required: ["emotion", "bubble"],
+      required: ["emotion", "bubble", "spoken"],
     },
     action: {
       type: ["object", "null"],
@@ -81,7 +82,7 @@ export function drawingAnalysisPrompt(context: DrawingPromptContext): string {
     `World summary: ${context.worldSummary}`,
     "Look ONLY at the NEWLY added strokes (usually the most recently drawn ink, often near the feet or hands).",
     "This is open-ended free play. Understand whatever the user added: objects, clothing, tools, creatures, symbols, or handwritten Persian/English text.",
-    "If the user wrote a question, mappedAction=answer_question and reaction.bubble must answer it briefly in Persian.",
+    "If the user wrote a question, mappedAction=answer_question and the reaction must answer it briefly in Persian.",
     "If a gap was erased from the normally continuous white ground line, mappedAction=ground_erased and react sadly or worriedly.",
     "For wearable or held objects, return attachment geometry and the best attachTo joint. Shoes should be separate left/right objects when possible.",
     "Fingers follow their matching hand bone, and eyebrows participate in emotional reactions. Treat them as real character parts, while still choosing only the supported actions below.",
@@ -93,7 +94,10 @@ export function drawingAnalysisPrompt(context: DrawingPromptContext): string {
     "For each recognized object give: type (e.g. shoe, boot, skate, fishing_rod), category, a tight boundingBox, attachTo (a joint id from the list above, or null), anchor (the point where it should attach, or null), orientationDegrees, affordances.",
     "Set recognized=false if there is nothing new drawn. Set matchesGoal=false if what is drawn does not fit the goal.",
     `mappedAction must be one of equip_shoes, equip_tool, answer_question, ground_erased, decorate, react, or none.`,
-    'reaction.bubble: the character\'s reaction in Persian (فارسی), playful and short (under 70 characters).',
+    "The fixed hero is grumpy but lovable: it protests briefly, then becomes curious or delighted when the child helps.",
+    "reaction.emotion must be exactly one of curious, protesting, confused, effort, delighted, sad.",
+    'reaction.bubble: the semantic reaction in Persian (فارسی), playful and under 70 characters.',
+    'reaction.spoken: one understandable Iranian-Persian sentence under 100 characters. It may begin with exactly one natural interjection such as «اِ؟»، «هوم...»، «اوه!» or «آها!».',
     "Return ONLY JSON.",
   ].join("\n");
 }
@@ -102,6 +106,6 @@ export function drawingRepairPrompt(error: string): string {
   return [
     "Your previous response was rejected by validation. Fix it and return ONLY valid JSON.",
     `Validation error: ${error}`,
-    "Keep the same structure. bubble text must be Persian and short.",
+    "Keep the same structure. bubble and spoken text must be Persian and short; emotion must use an allowed preset.",
   ].join("\n");
 }

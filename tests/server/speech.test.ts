@@ -7,8 +7,10 @@ import { speechRoute } from "../../server/routes/speech.js";
 describe("generated speech", () => {
   let server: Server;
   let baseUrl = "";
+  let seenPreset = "";
   const generator: SpeechGenerator = {
-    async generate() {
+    async generate(_text, preset) {
+      seenPreset = preset ?? "";
       return { bytes: pcmToWav(Buffer.alloc(240)), contentType: "audio/wav", cacheHit: false };
     },
   };
@@ -30,7 +32,7 @@ describe("generated speech", () => {
     const response = await fetch(`${baseUrl}/api/speech`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "سلام" }),
+      body: JSON.stringify({ text: "سلام", preset: "delighted" }),
     });
     const bytes = Buffer.from(await response.arrayBuffer());
     expect(response.status).toBe(200);
@@ -38,6 +40,7 @@ describe("generated speech", () => {
     expect(bytes.toString("ascii", 0, 4)).toBe("RIFF");
     expect(bytes.toString("ascii", 8, 12)).toBe("WAVE");
     expect(bytes.readUInt32LE(40)).toBe(240);
+    expect(seenPreset).toBe("delighted");
   });
 
   it("rejects empty text", async () => {
@@ -45,6 +48,15 @@ describe("generated speech", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: "" }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects unknown performance presets", async () => {
+    const response = await fetch(`${baseUrl}/api/speech`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "سلام", preset: "celebrity_clone" }),
     });
     expect(response.status).toBe(400);
   });

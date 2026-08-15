@@ -1,9 +1,13 @@
+import type { HeroVoicePreset } from "../character/living-line-hero.js";
+
 export type GeneratedSpeechDiagnostic = (event: string, detail: Record<string, unknown>) => void;
 
 export class GeneratedSpeech {
   private context: AudioContext | null = null;
   private active: AudioBufferSourceNode | null = null;
   private request: AbortController | null = null;
+  private readonly audioCache = new Map<string, ArrayBuffer>();
+  private readonly pendingAudio = new Map<string, Promise<ArrayBuffer>>();
 
   constructor(private readonly diagnostic: GeneratedSpeechDiagnostic = () => void 0) {}
 
@@ -22,22 +26,29 @@ export class GeneratedSpeech {
     });
   }
 
-  async speak(text: string, onEnd: () => void = () => void 0): Promise<boolean> {
+  preload(lines: Array<{ text: string; preset: HeroVoicePreset }>): void {
+    for (const line of lines) {
+      void this.loadAudio(line.text, line.preset).catch((error) => {
+        this.diagnostic("preload_error", { textLength: line.text.length, message: error instanceof Error ? error.message : String(error) });
+      });
+    }
+  }
+
+  async speak(
+    text: string,
+    onEnd: () => void = () => void 0,
+    preset: HeroVoicePreset = "curious",
+  ): Promise<boolean> {
     if (!this.supported || text.trim().length === 0) return false;
     this.stop();
     const request = new AbortController();
     this.request = request;
     const startedAt = performance.now();
-    this.diagnostic("generation_requested", { ...this.snapshot(), textLength: text.length });
+    this.diagnostic("generation_requested", { ...this.snapshot(), textLength: text.length, preset });
     try {
-      const response = await fetch("/api/speech", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text }),
-        signal: request.signal,
-      });
-      if (!response.ok) throw new Error(`speech endpoint returned ${response.status}`);
-      const bytes = await response.arrayBuffer();
+      const cacheKey = this.cacheKey(text, preset);
+      const wasCached = this.audioCache.has(cacheKey);
+      const bytes = await this.loadAudio(text, preset);
       if (this.request !== request) return false;
       const context = this.ensureContext();
       await context.resume();
@@ -59,7 +70,8 @@ export class GeneratedSpeech {
         ...this.snapshot(),
         durationSeconds: Math.round(buffer.duration * 100) / 100,
         elapsedMs: Math.round(performance.now() - startedAt),
-        cache: response.headers.get("x-tts-cache"),
+        cache: wasCached ? "client-hit" : "server-or-network",
+        preset,
       });
       return true;
     } catch (error) {
@@ -91,7 +103,33 @@ export class GeneratedSpeech {
       contextState: this.context?.state ?? "not-created",
       generating: this.request !== null && this.active === null,
       playing: this.active !== null,
+      cachedLines: this.audioCache.size,
     };
+  }
+
+  private cacheKey(text: string, preset: HeroVoicePreset): string {
+    return `${preset}\0${text.trim()}`;
+  }
+
+  private loadAudio(text: string, preset: HeroVoicePreset): Promise<ArrayBuffer> {
+    const key = this.cacheKey(text, preset);
+    const cached = this.audioCache.get(key);
+    if (cached) return Promise.resolve(cached.slice(0));
+    const pending = this.pendingAudio.get(key);
+    if (pending) return pending.then((bytes) => bytes.slice(0));
+    const request = fetch("/api/speech", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text, preset }),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`speech endpoint returned ${response.status}`);
+      const bytes = await response.arrayBuffer();
+      this.audioCache.set(key, bytes.slice(0));
+      while (this.audioCache.size > 24) this.audioCache.delete(this.audioCache.keys().next().value!);
+      return bytes;
+    }).finally(() => this.pendingAudio.delete(key));
+    this.pendingAudio.set(key, request);
+    return request.then((bytes) => bytes.slice(0));
   }
 
   private ensureContext(): AudioContext {

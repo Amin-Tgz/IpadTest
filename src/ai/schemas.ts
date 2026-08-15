@@ -75,8 +75,9 @@ export interface DrawingAnalysis {
   mappedAction: string | null;
   action?: AIActionRequest | null;
   reaction: {
-    emotion: string;
+    emotion: "curious" | "protesting" | "confused" | "effort" | "delighted" | "sad";
     bubble: string;
+    spoken: string;
   };
 }
 

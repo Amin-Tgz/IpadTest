@@ -26,6 +26,7 @@ describe("POST /api/character/analyze", () => {
       },
       provider,
       enableRateLimit: false,
+      enableLegacyCharacterAnalysis: true,
     });
     server = await new Promise<Server>((resolve) => {
       const s = app.listen(0, () => resolve(s));

@@ -20,6 +20,7 @@ export interface AppDeps {
   config?: ServerConfig;
   provider?: AIProvider;
   enableRateLimit?: boolean;
+  enableLegacyCharacterAnalysis?: boolean;
   speechGenerator?: SpeechGenerator;
 }
 
@@ -50,7 +51,9 @@ export function createApp(deps: AppDeps = {}) {
     app.use("/api/drawing", rateLimiter(20, 60_000));
     app.use("/api/speech", rateLimiter(30, 60_000));
   }
-  app.use("/api/character/analyze", analyzeCharacterRoute(provider, cfg));
+  if (deps.enableLegacyCharacterAnalysis) {
+    app.use("/api/character/analyze", analyzeCharacterRoute(provider, cfg));
+  }
   app.use("/api/drawing/analyze", analyzeDrawingRoute(provider, cfg));
   app.use("/api/speech", speechRoute(speechGenerator));
 
@@ -74,7 +77,10 @@ export function createApp(deps: AppDeps = {}) {
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const config = loadConfig();
-  const app = createApp({ config });
+  const app = createApp({
+    config,
+    enableLegacyCharacterAnalysis: process.env.ENABLE_LEGACY_CHARACTER_ANALYSIS === "1",
+  });
   const server = app.listen(config.PORT, () => {
     console.log(`[pencil-ai] server listening on http://localhost:${config.PORT}`);
   });

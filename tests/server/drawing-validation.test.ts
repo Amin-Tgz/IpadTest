@@ -19,7 +19,7 @@ const base = {
   ],
   interpretation: "A pair of oversized boots",
   mappedAction: "equip_shoes",
-  reaction: { emotion: "excited", bubble: "وای! یکم بزرگن، ولی عاشقشونم!" },
+  reaction: { emotion: "delighted", bubble: "وای! یکم بزرگن، ولی عاشقشونم!", spoken: "آها! یکم بزرگن، ولی عاشقشونم!" },
 };
 
 describe("sanitizeDrawingAnalysis", () => {
@@ -37,6 +37,13 @@ describe("sanitizeDrawingAnalysis", () => {
     input.reaction.bubble = "ب".repeat(200);
     const out = sanitizeDrawingAnalysis(input, { width: 512, height: 512 });
     expect(out.reaction.bubble.length).toBeLessThanOrEqual(70);
+  });
+
+  it("defaults blank spoken text to the semantic bubble", () => {
+    const input = structuredClone(base);
+    input.reaction.spoken = "";
+    const out = sanitizeDrawingAnalysis(input, { width: 512, height: 512 });
+    expect(out.reaction.spoken).toBe(out.reaction.bubble);
   });
 
   it("accepts null anchor and attachTo", () => {
