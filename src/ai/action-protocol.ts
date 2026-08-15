@@ -1,6 +1,6 @@
 import type { AIActionRequest } from "./schemas.js";
 
-const TARGET_REQUIRED = new Set<AIActionRequest["type"]>(["equip", "use", "climb", "interact"]);
+const TARGET_REQUIRED = new Set<AIActionRequest["type"]>(["equip", "use", "climb", "interact", "point", "rescue"]);
 
 export function validateActionRequest(
   action: AIActionRequest,

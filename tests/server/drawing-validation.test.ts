@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sanitizeDrawingAnalysis } from "../../server/ai/drawing-validation.js";
+import { DRAWING_JSON_SCHEMA } from "../../server/ai/drawing-prompts.js";
 
 const base = {
   goalId: "draw_shoes",
@@ -23,6 +24,16 @@ const base = {
 };
 
 describe("sanitizeDrawingAnalysis", () => {
+  it("declares every structured-output object as closed", () => {
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      const record = node as Record<string, unknown>;
+      const types = Array.isArray(record.type) ? record.type : [record.type];
+      if (types.includes("object")) expect(record.additionalProperties).toBe(false);
+      Object.values(record).forEach(visit);
+    };
+    visit(DRAWING_JSON_SCHEMA);
+  });
   it("clamps coordinates and confidence", () => {
     const input = structuredClone(base);
     input.objects[0].boundingBox.x = -40;
@@ -82,5 +93,39 @@ describe("sanitizeDrawingAnalysis", () => {
     expect(sanitizeDrawingAnalysis(input, { width: 512, height: 512 }).action?.type).toBe("scratch_head");
     input.action = { type: "teleport_anywhere", targetObjectIndex: null, direction: null, durationMs: 1200 };
     expect(() => sanitizeDrawingAnalysis(input, { width: 512, height: 512 })).toThrow();
+  });
+
+  it("accepts valid point and ladder rescue actions", () => {
+    const pointing = structuredClone(base) as typeof base & { action: unknown };
+    pointing.mappedAction = "point";
+    pointing.action = { type: "point", targetObjectIndex: 0, direction: null, durationMs: 900 };
+    expect(sanitizeDrawingAnalysis(pointing, { width: 512, height: 512 }).action?.type).toBe("point");
+
+    const rescue = structuredClone(base) as typeof base & { action: unknown };
+    rescue.objects[0].type = "ladder";
+    rescue.objects[0].category = "other";
+    rescue.objects[0].attachTo = null as unknown as string;
+    rescue.objects[0].anchor = null as unknown as { x: number; y: number };
+    (rescue.objects[0] as typeof rescue.objects[0] & { physicsShape: string }).physicsShape = "ladder";
+    rescue.mappedAction = "rescue";
+    rescue.action = { type: "rescue", targetObjectIndex: 0, direction: "up", durationMs: 1800 };
+    expect(sanitizeDrawingAnalysis(rescue, { width: 512, height: 512 }).action?.type).toBe("rescue");
+  });
+
+  it("rejects invalid targets, anchors, rescue semantics, and extra properties", () => {
+    const invalidTarget = structuredClone(base) as typeof base & { action: unknown };
+    invalidTarget.action = { type: "point", targetObjectIndex: 4, direction: null, durationMs: 900 };
+    expect(() => sanitizeDrawingAnalysis(invalidTarget, { width: 512, height: 512 })).toThrow(/valid targetObjectIndex/);
+
+    const invalidAnchor = structuredClone(base);
+    invalidAnchor.objects[0].anchor = null as unknown as { x: number; y: number };
+    expect(() => sanitizeDrawingAnalysis(invalidAnchor, { width: 512, height: 512 })).toThrow(/attachTo and anchor/);
+
+    const unsafeRescue = structuredClone(base) as typeof base & { action: unknown };
+    unsafeRescue.action = { type: "rescue", targetObjectIndex: 0, direction: "up", durationMs: 900 };
+    expect(() => sanitizeDrawingAnalysis(unsafeRescue, { width: 512, height: 512 })).toThrow(/must be a ladder/);
+
+    const extra = { ...structuredClone(base), transform: { x: 1 } };
+    expect(() => sanitizeDrawingAnalysis(extra, { width: 512, height: 512 })).toThrow();
   });
 });

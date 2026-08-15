@@ -405,10 +405,14 @@ const storyBeats = new StoryBeatCoordinator({
   startMotion: (beat) => startBeatMotion(beat),
   onSettled: (beat, result) => {
     if (rigRuntime) rigRuntime.talkActive = false;
+    if (beat.motion === "point") rigRuntime?.clearPointing();
     if (animController.currentId === beat.motion || animController.currentId === "talk") animController.playById("idle");
     diagnostics.info("story_beat_settled", { id: beat.id, speechStatus: result.status, durationMs: result.durationMs });
   },
-  cancelSpeech: (reason) => speech.cancel(reason),
+  cancelSpeech: (reason) => {
+    speech.cancel(reason);
+    rigRuntime?.clearPointing();
+  },
 });
 
 let storyBeatSequence = 0;
@@ -463,9 +467,8 @@ function jointsInImageCoords(): Array<{ id: string; x: number; y: number }> {
     }
   };
   for (const joint of rigRuntime.joints) add(joint.id, rigRuntime.jointWorld(joint.id));
-  // Fingers inherit the hand bone today, while eyebrows are expressive face
-  // groups. Exposing these semantic anchors lets the AI reason about them now
-  // without allowing it to invent unsupported low-level animation commands.
+  // Keep broad hand-part aliases for provider compatibility; the authored
+  // index and thumb tip anchors above are the canonical finger coordinates.
   add("left_fingers", rigRuntime.jointWorld("left_hand"));
   add("right_fingers", rigRuntime.jointWorld("right_hand"));
   for (const feature of ["leftEyebrow", "rightEyebrow"] as const) {
@@ -622,7 +625,8 @@ function finishDrawingReaction(
 ): void {
   const movementAction = action?.type === "move" || action?.type === "climb";
   const actionExecuted = !movementAction && executeAIAction(action, entityIds);
-  speakStoryText(bubbleText, spokenText, emotion, undefined, actionExecuted ? undefined : motionForEmotion(emotion));
+  const actionMotion = actionExecuted && action?.type === "point" ? "point" : undefined;
+  speakStoryText(bubbleText, spokenText, emotion, undefined, actionMotion ?? (actionExecuted ? undefined : motionForEmotion(emotion)));
   refreshReviewControls();
 }
 
@@ -739,6 +743,18 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
         if (head) rigRuntime.aimLimb("right_shoulder", "right_elbow", "right_hand", head, -1);
       }
       return true;
+    case "point": {
+      if (!target) return false;
+      const targetPoint = {
+        x: target.bounds.x + target.bounds.width / 2,
+        y: target.bounds.y + target.bounds.height / 2,
+      };
+      const hand = rigRuntime.pointAt(targetPoint);
+      if (!hand) return false;
+      animController.playById("point");
+      diagnostics.info("ai_point_started", { targetId: target.id, hand, target: targetPoint });
+      return true;
+    }
     case "move": {
       const root = rigRuntime.jointWorld("root");
       const direction = action.direction === "left" ? -1 : action.direction === "right" ? 1 : target && root && target.bounds.x < root.x ? -1 : 1;
@@ -786,6 +802,11 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
       animController.playById("talk");
       return true;
     case "react":
+      return false;
+    case "rescue":
+      // The dedicated fallen-state coordinator owns rescue transforms and
+      // climbing; normal free-play must never improvise them here.
+      diagnostics.info("ai_action_rejected", { action: action.type, reason: "hero_not_fallen" });
       return false;
   }
 }
@@ -1613,7 +1634,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
     }
 
     const pose = animController.update(now);
-    if (animController.currentId !== "scratch_head") rigRuntime.clearIK();
+    if (animController.currentId !== "scratch_head" && rigRuntime.pointingHand === null) rigRuntime.clearIK();
     rigRuntime.applyPose({
       jointRotations: pose.jointRotations,
       rootDeltaX: 0,

@@ -15,7 +15,8 @@ export type MotionId =
   | "stop_at_pond"
   | "hold_rod"
   | "cast_rod"
-  | "pull_fish";
+  | "pull_fish"
+  | "point";
 
 export interface MotionTrack {
   t: number[];
@@ -75,6 +76,16 @@ export function evaluateMotion(clip: MotionClip, timeMs: number): Pose {
 }
 
 export const MOTION_CLIPS: Record<MotionId, MotionClip> = {
+  point: {
+    id: "point",
+    durationMs: 900,
+    loop: false,
+    jointTracks: {
+      torso: track([[0, 0], [0.28, -5], [1, -3]]),
+      head: track([[0, 0], [0.3, 6], [1, 4]]),
+    },
+    rootY: track([[0, 0], [0.28, -2], [1, 0]]),
+  },
   spawn: {
     id: "spawn",
     durationMs: 1150,

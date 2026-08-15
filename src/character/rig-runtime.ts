@@ -24,6 +24,7 @@ export interface FaceLook {
 }
 
 export type FaceExpression = "neutral" | "happy" | "sad" | "surprised";
+export type PointingHand = "left" | "right";
 
 const LOOK_MAX_OFFSET = 7;
 const BLINK_INTERVAL_MS = 3200;
@@ -44,6 +45,7 @@ export class RigRuntime {
 
   private jointsById = new Map<JointId, Rig["joints"][number]>();
   private ikRotations: Partial<Record<JointId, number>> = {};
+  private pointing: { hand: PointingHand; target: { x: number; y: number } } | null = null;
 
   constructor(
     private readonly rig: Rig,
@@ -81,7 +83,34 @@ export class RigRuntime {
 
   jointWorld(id: JointId): { x: number; y: number } | null {
     if (!this.jointsById.has(id)) return null;
+    if (this.pointing && id === `${this.pointing.hand}_index_tip`) {
+      return this.pointingFingerGeometry(this.pointing.hand)?.tip ?? null;
+    }
     return this.localToWorld(this.fkPosition(id, new Map()));
+  }
+
+  get pointingHand(): PointingHand | null {
+    return this.pointing?.hand ?? null;
+  }
+
+  pointAt(targetWorld: { x: number; y: number }): PointingHand | null {
+    const left = this.jointWorld("left_hand");
+    const right = this.jointWorld("right_hand");
+    if (!left || !right || !Number.isFinite(targetWorld.x) || !Number.isFinite(targetWorld.y)) return null;
+    const hand: PointingHand = distance(left, targetWorld) <= distance(right, targetWorld) ? "left" : "right";
+    const aimed = hand === "left"
+      ? this.aimLimb("left_shoulder", "left_elbow", "left_hand", targetWorld, 1)
+      : this.aimLimb("right_shoulder", "right_elbow", "right_hand", targetWorld, -1);
+    if (!aimed) return null;
+    this.pointing = { hand, target: { ...targetWorld } };
+    this.look = { targetX: targetWorld.x, targetY: targetWorld.y };
+    return hand;
+  }
+
+  clearPointing(): void {
+    this.pointing = null;
+    this.clearIK();
+    this.look = { targetX: null, targetY: null };
   }
 
   jointScreen(id: JointId, camera: Camera): { x: number; y: number } | null {
@@ -314,7 +343,52 @@ export class RigRuntime {
       if (!start || !middle || !end) continue;
       transformed[strokeIndex] = smoothLimb(start, middle, end, this.rig.strokes[strokeIndex].points.length);
     }
+    if (this.pointing) this.applyPointingFingers(transformed, this.pointing.hand);
     return transformed;
+  }
+
+  private applyPointingFingers(transformed: Array<Array<{ x: number; y: number }>>, hand: PointingHand): void {
+    const geometry = this.pointingFingerGeometry(hand);
+    if (!geometry) return;
+    const indexStroke = this.rig.strokes.findIndex((stroke) => stroke.id === `hero_${hand}_index`);
+    const thumbStroke = this.rig.strokes.findIndex((stroke) => stroke.id === `hero_${hand}_thumb`);
+    if (indexStroke >= 0) {
+      transformed[indexStroke] = curvedFinger(geometry.hand, geometry.tip, geometry.normal, this.rig.strokes[indexStroke].points.length);
+    }
+    if (thumbStroke >= 0) {
+      const curlTip = {
+        x: geometry.hand.x + geometry.unit.x * 4 + geometry.normal.x * 7,
+        y: geometry.hand.y + geometry.unit.y * 4 + geometry.normal.y * 7,
+      };
+      transformed[thumbStroke] = curvedFinger(geometry.hand, curlTip, { x: -geometry.unit.x, y: -geometry.unit.y }, this.rig.strokes[thumbStroke].points.length, 3.5);
+    }
+  }
+
+  private pointingFingerGeometry(hand: PointingHand): {
+    hand: { x: number; y: number };
+    tip: { x: number; y: number };
+    unit: { x: number; y: number };
+    normal: { x: number; y: number };
+  } | null {
+    if (!this.pointing) return null;
+    const handJoint = this.jointsById.get(`${hand}_hand` as JointId);
+    if (!handJoint) return null;
+    const handWorld = this.localToWorld(this.fkPosition(handJoint.id, new Map()));
+    const dx = this.pointing.target.x - handWorld.x;
+    const dy = this.pointing.target.y - handWorld.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 0.001) return null;
+    const unit = { x: dx / length, y: dy / length };
+    const normalSign = hand === "left" ? -1 : 1;
+    const normal = { x: -unit.y * normalSign, y: unit.x * normalSign };
+    const transform = this.rig.transform;
+    const fingerLength = 15 * (Math.abs(transform.scaleX) + Math.abs(transform.scaleY)) / 2;
+    return {
+      hand: handWorld,
+      tip: { x: handWorld.x + unit.x * fingerLength, y: handWorld.y + unit.y * fingerLength },
+      unit,
+      normal,
+    };
   }
 
   private faceOffset(
@@ -383,6 +457,28 @@ export class RigRuntime {
   worldToLocal(point: { x: number; y: number }): { x: number; y: number } {
     return inverseTransformWorldPoint(point, this.rig.transform);
   }
+}
+
+function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function curvedFinger(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  normal: { x: number; y: number },
+  count: number,
+  bend = 1.2,
+): Array<{ x: number; y: number }> {
+  const pointCount = Math.max(6, count);
+  return Array.from({ length: pointCount }, (_, index) => {
+    const t = index / (pointCount - 1);
+    const curve = Math.sin(Math.PI * t) * bend;
+    return {
+      x: start.x + (end.x - start.x) * t + normal.x * curve,
+      y: start.y + (end.y - start.y) * t + normal.y * curve,
+    };
+  });
 }
 
 function smoothLimb(

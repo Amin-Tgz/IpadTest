@@ -1,5 +1,6 @@
 export const DRAWING_JSON_SCHEMA = {
   type: "object",
+  additionalProperties: false,
   properties: {
     goalId: { type: "string" },
     recognized: { type: "boolean" },
@@ -9,11 +10,13 @@ export const DRAWING_JSON_SCHEMA = {
       type: "array",
       items: {
         type: "object",
+        additionalProperties: false,
         properties: {
           type: { type: "string" },
           category: { type: "string", enum: ["wearable", "held_tool", "decoration", "other"] },
           boundingBox: {
             type: "object",
+            additionalProperties: false,
             properties: {
               x: { type: "number" },
               y: { type: "number" },
@@ -22,15 +25,16 @@ export const DRAWING_JSON_SCHEMA = {
             },
             required: ["x", "y", "width", "height"],
           },
-          attachTo: { type: ["string", "null"] },
+          attachTo: { type: ["string", "null"], enum: ["left_hand", "right_hand", "left_foot", "right_foot", "head", null] },
           anchor: {
             type: ["object", "null"],
+            additionalProperties: false,
             properties: { x: { type: "number" }, y: { type: "number" } },
             required: ["x", "y"],
           },
           orientationDegrees: { type: "number" },
           affordances: { type: "array", items: { type: "string" } },
-          physicsShape: { type: "string", enum: ["platform", "stairs", "slope", "obstacle", "dynamic", "none"] },
+          physicsShape: { type: "string", enum: ["platform", "stairs", "slope", "obstacle", "dynamic", "ladder", "none"] },
         },
         required: ["type", "category", "boundingBox", "attachTo", "anchor", "orientationDegrees", "affordances", "physicsShape"],
       },
@@ -38,10 +42,11 @@ export const DRAWING_JSON_SCHEMA = {
     interpretation: { type: "string" },
     mappedAction: {
       type: ["string", "null"],
-      enum: ["equip_shoes", "equip_tool", "answer_question", "ground_erased", "decorate", "react", "none", null],
+      enum: ["equip_shoes", "equip_tool", "answer_question", "ground_erased", "decorate", "react", "point", "rescue", "none", null],
     },
     reaction: {
       type: "object",
+      additionalProperties: false,
       properties: {
         emotion: { type: "string", enum: ["curious", "protesting", "confused", "effort", "delighted", "sad"] },
         bubble: { type: "string" },
@@ -51,8 +56,9 @@ export const DRAWING_JSON_SCHEMA = {
     },
     action: {
       type: ["object", "null"],
+      additionalProperties: false,
       properties: {
-        type: { type: "string", enum: ["scratch_head", "speak", "react", "equip", "use", "move", "jump", "climb", "interact"] },
+        type: { type: "string", enum: ["scratch_head", "speak", "react", "equip", "use", "move", "jump", "climb", "interact", "point", "rescue"] },
         targetObjectIndex: { type: ["number", "null"] },
         direction: { type: ["string", "null"], enum: ["left", "right", "up", "down", null] },
         durationMs: { type: "number" },
@@ -87,13 +93,14 @@ export function drawingAnalysisPrompt(context: DrawingPromptContext): string {
     "For wearable or held objects, return attachment geometry and the best attachTo joint. Shoes should be separate left/right objects when possible.",
     "Fingers follow their matching hand bone, and eyebrows participate in emotional reactions. Treat them as real character parts, while still choosing only the supported actions below.",
     "Use mappedAction=decorate for scene objects, react for understood non-attachable drawings, and none only when nothing can be understood.",
-    "For every object choose physicsShape: stairs, platform, slope, obstacle, dynamic, or none. Use none for text, clothing, held items, and decorations without collision.",
-    "Choose one executable action when appropriate. Allowed actions only: scratch_head, speak, react, equip, use, move, jump, climb, interact. Never invent action names or animation frames.",
+    "For every object choose physicsShape: stairs, platform, slope, obstacle, dynamic, ladder, or none. Use ladder only for a recognizable ladder and none for text, clothing, held items, and decorations without collision.",
+    "Choose one executable action when appropriate. Allowed actions only: scratch_head, speak, react, equip, use, move, jump, climb, interact, point, rescue. Never invent action names or animation frames.",
+    "Use point with a valid targetObjectIndex when the hero should visibly point at a recognized object. Use rescue only for a ladder while the world summary says the hero has fallen.",
     "For stairs/slopes/platforms prefer move or climb. For surprising unclear drawings scratch_head is useful. targetObjectIndex indexes the objects array or is null.",
     "IMAGE A is the canonical coordinate system. Every returned boundingBox and anchor MUST use IMAGE A pixels, never crop-local coordinates from IMAGE B.",
     "For each recognized object give: type (e.g. shoe, boot, skate, fishing_rod), category, a tight boundingBox, attachTo (a joint id from the list above, or null), anchor (the point where it should attach, or null), orientationDegrees, affordances.",
     "Set recognized=false if there is nothing new drawn. Set matchesGoal=false if what is drawn does not fit the goal.",
-    `mappedAction must be one of equip_shoes, equip_tool, answer_question, ground_erased, decorate, react, or none.`,
+    `mappedAction must be one of equip_shoes, equip_tool, answer_question, ground_erased, decorate, react, point, rescue, or none.`,
     "The fixed hero is grumpy but lovable: it protests briefly, then becomes curious or delighted when the child helps.",
     "reaction.emotion must be exactly one of curious, protesting, confused, effort, delighted, sad.",
     'reaction.bubble: the semantic reaction in Persian (فارسی), playful and under 70 characters.',

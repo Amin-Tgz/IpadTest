@@ -30,7 +30,7 @@ const GENERATED_BUDGET_MS = 8_000;
 const RETRY_DELAY_MS = 250;
 
 export function isRetryableSpeechStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
 }
 
 export class GeneratedSpeech {
@@ -211,6 +211,7 @@ export class GeneratedSpeech {
       const abortAttempt = () => attemptController.abort();
       outerSignal.addEventListener("abort", abortAttempt, { once: true });
       const timeout = window.setTimeout(() => attemptController.abort(), remaining);
+      let retryableFailure = true;
       try {
         const response = await fetch("/api/speech", {
           method: "POST",
@@ -221,10 +222,12 @@ export class GeneratedSpeech {
         if (response.ok) return await response.arrayBuffer();
         const retryable = isRetryableSpeechStatus(response.status);
         lastError = new Error(`speech endpoint returned ${response.status}`);
-        if (!retryable) throw lastError;
+        retryableFailure = retryable;
+        if (!retryableFailure) throw lastError;
       } catch (error) {
         if (outerSignal.aborted) throw new DOMException("Aborted", "AbortError");
         lastError = error;
+        if (!retryableFailure) throw error;
       } finally {
         window.clearTimeout(timeout);
         outerSignal.removeEventListener("abort", abortAttempt);

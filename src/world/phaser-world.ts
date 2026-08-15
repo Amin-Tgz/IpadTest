@@ -2,7 +2,7 @@ import Phaser from "phaser";
 import type { RigRuntime } from "../character/rig-runtime.js";
 import { stairStepRects, stairTopWaypoints } from "./physics-geometry.js";
 
-export type PhysicsShape = "platform" | "stairs" | "slope" | "obstacle" | "dynamic";
+export type PhysicsShape = "platform" | "stairs" | "slope" | "obstacle" | "dynamic" | "ladder";
 
 export interface PhysicsEntitySpec {
   id: string;

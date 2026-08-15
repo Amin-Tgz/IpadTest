@@ -53,10 +53,10 @@ export interface DrawingObject {
   anchor: Vec2 | null;
   orientationDegrees: number;
   affordances: string[];
-  physicsShape?: "platform" | "stairs" | "slope" | "obstacle" | "dynamic" | "none";
+  physicsShape?: "platform" | "stairs" | "slope" | "obstacle" | "dynamic" | "ladder" | "none";
 }
 
-export type AIActionName = "scratch_head" | "speak" | "react" | "equip" | "use" | "move" | "jump" | "climb" | "interact";
+export type AIActionName = "scratch_head" | "speak" | "react" | "equip" | "use" | "move" | "jump" | "climb" | "interact" | "point" | "rescue";
 
 export interface AIActionRequest {
   type: AIActionName;

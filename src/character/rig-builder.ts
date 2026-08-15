@@ -283,9 +283,10 @@ function partCandidates(part: string | undefined, joints: RigJoint[]): RigJoint[
   const matching = joints.filter((joint) => {
     if (names.includes("eyebrow") || names.includes("brow") || names.includes("head") || names.includes("hair") || names.includes("hat")) return joint.id === "head";
     if (names.includes("finger") || names.includes("thumb")) {
-      if (names.includes("left")) return joint.id === "left_hand";
-      if (names.includes("right")) return joint.id === "right_hand";
-      return joint.id === "left_hand" || joint.id === "right_hand";
+      const digit = names.includes("thumb") ? "thumb_tip" : "index_tip";
+      if (names.includes("left")) return joint.id === `left_${digit}` || joint.id === "left_hand";
+      if (names.includes("right")) return joint.id === `right_${digit}` || joint.id === "right_hand";
+      return joint.id.endsWith(digit) || joint.id === "left_hand" || joint.id === "right_hand";
     }
     if (names.includes("left") && (names.includes("arm") || names.includes("hand"))) return joint.id.startsWith("left_") && (joint.id.includes("shoulder") || joint.id.includes("elbow") || joint.id.includes("hand"));
     if (names.includes("right") && (names.includes("arm") || names.includes("hand"))) return joint.id.startsWith("right_") && (joint.id.includes("shoulder") || joint.id.includes("elbow") || joint.id.includes("hand"));

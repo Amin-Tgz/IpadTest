@@ -13,4 +13,10 @@ describe("AI action protocol", () => {
   it("resolves an existing object index to a stable id", () => {
     expect(validateActionRequest({ type: "use", targetObjectIndex: 0, direction: null, durationMs: 700 }, ["tool"])).toEqual({ valid: true, targetId: "tool" });
   });
+
+  it("requires a valid target for pointing and rescue", () => {
+    expect(validateActionRequest({ type: "point", targetObjectIndex: null, direction: null, durationMs: 900 }, ["kite"])).toEqual({ valid: false, reason: "missing_target" });
+    expect(validateActionRequest({ type: "point", targetObjectIndex: 0, direction: null, durationMs: 900 }, ["kite"])).toEqual({ valid: true, targetId: "kite" });
+    expect(validateActionRequest({ type: "rescue", targetObjectIndex: 1, direction: "up", durationMs: 1200 }, ["ladder"])).toEqual({ valid: false, reason: "missing_target" });
+  });
 });

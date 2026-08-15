@@ -133,6 +133,8 @@ npm start
 
 Refreshing during the incomplete shoe lesson restarts that lesson with two empty foot slots; completed story progress can still be restored.
 
+Both hands have authored index-finger and thumb strokes with fixed semantic tip anchors. In free play the structured AI response may choose `point` plus a validated object index; the client selects the nearer hand, aims it with deterministic IK, holds the fingertip on target for the whole reaction beat, then clears the override.
+
 Use `?debug=speech` to show a direct voice-test button and forward speech lifecycle events to the server terminal:
 
 ```text
@@ -156,7 +158,7 @@ Gemini returns 24 kHz PCM audio. The server validates the AI response, wraps PCM
 
 The old `/api/character/analyze` route is disabled by default. Set `ENABLE_LEGACY_CHARACTER_ANALYSIS=1` only for development comparison and open `?debug=character` in the Vite client.
 
-AI outputs are validated with Zod, request sizes are limited, analysis and speech routes are rate-limited, and generated speech text is capped at 200 characters.
+AI outputs are validated with closed Zod/JSON schemas, fixed attachment anchors, local target/semantic checks, request-size limits, and route rate limits. Generated speech text is capped at 200 characters. Invalid point or rescue targets never reach the animation engine.
 
 ## Design principles
 

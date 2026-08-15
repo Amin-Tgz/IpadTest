@@ -13,19 +13,23 @@ export const drawingObjectSchema = z.object({
     width: z.number(),
     height: z.number(),
   }),
-  attachTo: z.string().max(40).nullable(),
-  anchor: z.object({ x: z.number(), y: z.number() }).nullable(),
+  attachTo: z.enum(["left_hand", "right_hand", "left_foot", "right_foot", "head"]).nullable(),
+  anchor: z.object({ x: z.number(), y: z.number() }).strict().nullable(),
   orientationDegrees: z.number().default(0),
   affordances: z.array(z.string().max(30)).default([]),
-  physicsShape: z.enum(["platform", "stairs", "slope", "obstacle", "dynamic", "none"]).default("none"),
+  physicsShape: z.enum(["platform", "stairs", "slope", "obstacle", "dynamic", "ladder", "none"]).default("none"),
+}).strict().superRefine((object, context) => {
+  if ((object.attachTo === null) !== (object.anchor === null)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "attachTo and anchor must either both be set or both be null" });
+  }
 });
 
 export const actionRequestSchema = z.object({
-  type: z.enum(["scratch_head", "speak", "react", "equip", "use", "move", "jump", "climb", "interact"]),
+  type: z.enum(["scratch_head", "speak", "react", "equip", "use", "move", "jump", "climb", "interact", "point", "rescue"]),
   targetObjectIndex: z.number().int().min(0).max(7).nullable().default(null),
   direction: z.enum(["left", "right", "up", "down"]).nullable().default(null),
   durationMs: z.number().int().min(100).max(5000).default(900),
-});
+}).strict();
 
 export const drawingAnalysisSchema = z.object({
   goalId: z.string().min(1).max(60),
@@ -34,13 +38,28 @@ export const drawingAnalysisSchema = z.object({
   confidence: z.number(),
   objects: z.array(drawingObjectSchema).max(8).default([]),
   interpretation: z.string().max(200).default(""),
-  mappedAction: z.enum(["equip_shoes", "equip_tool", "answer_question", "ground_erased", "decorate", "react", "none"]).nullable(),
+  mappedAction: z.enum(["equip_shoes", "equip_tool", "answer_question", "ground_erased", "decorate", "react", "point", "rescue", "none"]).nullable(),
   action: actionRequestSchema.nullable().default(null),
   reaction: z.object({
     emotion: z.enum(["curious", "protesting", "confused", "effort", "delighted", "sad"]).default("curious"),
     bubble: z.string().default(""),
     spoken: z.string().default(""),
-  }),
+  }).strict(),
+}).strict().superRefine((analysis, context) => {
+  const action = analysis.action;
+  if (!action) return;
+  const targetRequired = ["equip", "use", "climb", "interact", "point", "rescue"].includes(action.type);
+  const target = action.targetObjectIndex === null ? undefined : analysis.objects[action.targetObjectIndex];
+  if (targetRequired && !target) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["action", "targetObjectIndex"], message: "action requires a valid targetObjectIndex" });
+    return;
+  }
+  if (action.type === "rescue") {
+    const semantic = target ? `${target.type} ${target.affordances.join(" ")}`.toLowerCase() : "";
+    if (target?.physicsShape !== "ladder" && !/ladder|نردبان/.test(semantic)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["action", "targetObjectIndex"], message: "rescue target must be a ladder" });
+    }
+  }
 });
 
 export type DrawingAnalysis = z.infer<typeof drawingAnalysisSchema>;
