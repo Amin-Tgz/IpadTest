@@ -21,10 +21,11 @@ The central rule is simple: **the child's solution strokes stay the artwork**. A
 The complete prototype pipeline is implemented through the polish phase. The latest verified baseline is:
 
 - TypeScript strict typecheck passing
-- 32 Vitest files and 163 tests passing
+- 41 Vitest files and 221 tests passing
 - Production build passing
 - Real character/drawing analysis smoke-tested
 - Gemini Persian TTS and Web Audio playback verified on iPad
+- Shoe tutorial driven end to end in a browser against the live provider
 
 See [docs.md](docs.md) for the phase-by-phase development log and [plan.md](plan.md) for the full product specification.
 
