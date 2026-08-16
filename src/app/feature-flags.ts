@@ -9,4 +9,4 @@ export const FEATURE_FLAGS = {
 export type FeatureFlagKey = keyof typeof FEATURE_FLAGS;
 
 export const BACKGROUND_COLOR = PALETTE.background;
-export const APP_NAME = "Pencil AI";
+export const APP_NAME = "Line Pal";

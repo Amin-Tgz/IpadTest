@@ -69,6 +69,7 @@ describe("POST /api/drawing/analyze", () => {
   });
 
   it("returns a sanitized drawing analysis", async () => {
+    provider.requests = [];
     provider.responses = [{ text: JSON.stringify(validDrawing), rawModel: "mock" }];
     const res = await fetch(`${baseUrl}/api/drawing/analyze`, {
       method: "POST",
@@ -84,6 +85,10 @@ describe("POST /api/drawing/analyze", () => {
         ],
         worldSummary: "character stands on the ground line",
         acceptedCategories: ["shoe", "boot", "skate", "slipper"],
+        history: [
+          { id: "m1", role: "child", kind: "message", text: "بیا اینجا", createdAt: 1 },
+          { id: "m2", role: "system", kind: "action", text: "Hero crossed the bridge.", createdAt: 2 },
+        ],
       }),
     });
     expect(res.status).toBe(200);
@@ -94,6 +99,9 @@ describe("POST /api/drawing/analyze", () => {
     expect(body.analysis.matchesGoal).toBe(true);
     expect(body.analysis.objects).toHaveLength(2);
     expect(body.model).toBe("mock");
+    const systemText = provider.requests[0].messages[0].content[0].text ?? "";
+    expect(systemText).toContain("بیا اینجا");
+    expect(systemText).toContain("Hero crossed the bridge.");
   });
 
   it("handles a non-matching drawing", async () => {

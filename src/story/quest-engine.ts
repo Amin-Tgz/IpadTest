@@ -18,6 +18,7 @@ export interface DialogueLine {
   spoken: string;
   emotion: HeroVoicePreset;
   audioUrl?: string;
+  fallbackAudioUrl?: string;
   motion?: MotionId;
 }
 
@@ -60,8 +61,8 @@ export const QUESTS: Record<string, QuestDefinition> = {
     id: "draw_shoes",
     prompt: "The child should draw two shoes, boots, skates, or slippers for the fixed hero, one near each foot.",
     requests: [
-      { emotion: "protesting", motion: "protest", audioUrl: "/audio/hero/shoes-protest.pwa", bubble: "اِ! این خط برای پای برهنه‌ام خیلی زبره.", spoken: "اِ! این خط برای پای برهنه‌ام خیلی زبره." },
-      { emotion: "curious", motion: "confused", audioUrl: "/audio/hero/shoes-request.pwa", bubble: "دو تا کفش برام می‌کشی؟ یکی برای هر پا.", spoken: "هوم... دو تا کفش برام می‌کشی؟ یکی برای هر پا." },
+      { emotion: "protesting", motion: "protest", fallbackAudioUrl: "/audio/hero/shoes-protest.pwa", bubble: "اِ! این خط برای پای برهنه‌ام خیلی زبره.", spoken: "اِ! این خط برای پای برهنه‌ام خیلی زبره." },
+      { emotion: "curious", motion: "confused", fallbackAudioUrl: "/audio/hero/shoes-request.pwa", bubble: "دو تا کفش برام می‌کشی؟ یکی برای هر پا.", spoken: "هوم... دو تا کفش برام می‌کشی؟ یکی برای هر پا." },
     ],
     acceptedCategories: ["shoe", "boot", "skate", "slipper"],
     targetBones: ["left_foot", "right_foot"],
@@ -71,8 +72,8 @@ export const QUESTS: Record<string, QuestDefinition> = {
     id: "draw_fishing_tool",
     prompt: "The child should draw a fishing rod, net, spear, or magnet the fixed hero can hold in the right hand.",
     requests: [
-      { emotion: "curious", motion: "stop_at_pond", audioUrl: "/audio/hero/pond-notice.pwa", bubble: "اوه! توی برکه یک چیزی تکان خورد.", spoken: "اوه! توی برکه یک چیزی تکان خورد." },
-      { emotion: "protesting", motion: "protest", audioUrl: "/audio/hero/tool-request.pwa", bubble: "با دست خالی که نمی‌شه! یک ابزار برام بکش.", spoken: "اِ... با دست خالی که نمی‌شه! یک ابزار برام بکش." },
+      { emotion: "curious", motion: "stop_at_pond", fallbackAudioUrl: "/audio/hero/pond-notice.pwa", bubble: "اوه! توی برکه یک چیزی تکان خورد.", spoken: "اوه! توی برکه یک چیزی تکان خورد." },
+      { emotion: "protesting", motion: "protest", fallbackAudioUrl: "/audio/hero/tool-request.pwa", bubble: "با دست خالی که نمی‌شه! یک ابزار برام بکش.", spoken: "اِ... با دست خالی که نمی‌شه! یک ابزار برام بکش." },
     ],
     acceptedCategories: ["fishing_rod", "net", "spear", "magnet"],
     targetBones: ["right_hand"],
@@ -128,8 +129,8 @@ export class QuestEngine {
           this.command({ type: "attach_shoes" });
           this.queueBubbles([
             {
-              bubble: event.reactionBubble ?? "آها! این شد یک کفش حسابی؛ بریم!",
-              spoken: event.reactionSpoken ?? "آها! این شد یک کفش حسابی؛ بریم!",
+              bubble: event.reactionBubble ?? "چه خفن! این شد یک کفش حسابی؛ بریم!",
+              spoken: event.reactionSpoken ?? "چه خفن! این شد یک کفش حسابی؛ بریم!",
               emotion: event.emotion ?? "delighted",
               motion: "happy",
             },
@@ -167,8 +168,8 @@ export class QuestEngine {
           this.command({ type: "attach_rod" });
           this.queueBubbles([
             {
-              bubble: event.reactionBubble ?? "آها! حالا ببین چطور ماهی می‌گیرم!",
-              spoken: event.reactionSpoken ?? "آها! حالا ببین چطور ماهی می‌گیرم!",
+              bubble: event.reactionBubble ?? "خب رفیق، حالا ببین چطور ماهی می‌گیرم!",
+              spoken: event.reactionSpoken ?? "خب رفیق، حالا ببین چطور ماهی می‌گیرم!",
               emotion: event.emotion ?? "delighted",
             },
           ], () => {
@@ -190,7 +191,6 @@ export class QuestEngine {
           this.state = "ENDING";
           this.queueBubbles([
             { bubble: "این ماهی از کفش‌هام هم کوچیک‌تره!", spoken: "اِ؟ این ماهی از کفش‌هام هم کوچیک‌تره!", emotion: "protesting" },
-            { bubble: "آها! حالا هرچی دوست داری بکش؛ من هم می‌آم.", spoken: "آها! حالا هرچی دوست داری بکش؛ من هم می‌آم.", emotion: "delighted" },
           ], () => this.command({ type: "ending", text: "حالا نوبت دنیای توست." }));
         }
         break;

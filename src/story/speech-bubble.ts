@@ -2,7 +2,6 @@ const MAX_BUBBLE_CHARS = 70;
 
 export class SpeechBubble {
   private el: HTMLDivElement | null = null;
-  private tail: HTMLDivElement | null = null;
   private resizeListener = (): void => void 0;
   private thinkingTimer: number | null = null;
   private root: HTMLElement;
@@ -46,22 +45,6 @@ export class SpeechBubble {
     ].join(";");
     this.root.appendChild(this.el);
 
-    this.tail = document.createElement("div");
-    this.tail.style.cssText = [
-      "position:absolute",
-      "bottom:-10px",
-      "right:50%",
-      "margin-right:-8px",
-      "width:16px",
-      "height:16px",
-      "background:rgba(16,59,70,0.92)",
-      "border-right:2px solid #F7F5EE",
-      "border-bottom:2px solid #F7F5EE",
-      "transform:rotate(45deg)",
-      "pointer-events:none",
-    ].join(";");
-    this.el.appendChild(this.tail);
-
     this.position(anchorScreen);
     this.resizeListener = () => this.position(anchorScreen);
     window.addEventListener("resize", this.resizeListener);
@@ -80,7 +63,6 @@ export class SpeechBubble {
     window.removeEventListener("resize", this.resizeListener);
     this.el?.remove();
     this.el = null;
-    this.tail = null;
   }
 
   isVisible(): boolean {
@@ -102,7 +84,7 @@ export class SpeechBubble {
   }
 
   private position(anchorScreen: { x: number; y: number }): void {
-    if (!this.el || !this.tail) return;
+    if (!this.el) return;
     const el = this.el;
     el.style.transform = "scale(1)";
     el.style.opacity = "1";
@@ -121,13 +103,5 @@ export class SpeechBubble {
     el.style.left = `${Math.round(left)}px`;
     el.style.top = `${Math.round(useAbove ? above : below)}px`;
     el.style.transformOrigin = useAbove ? "bottom center" : "top center";
-    const tailDown = useAbove;
-    this.tail.style.top = tailDown ? "auto" : "-10px";
-    this.tail.style.bottom = tailDown ? "-10px" : "auto";
-    this.tail.style.borderRight = `2px solid #F7F5EE`;
-    this.tail.style.borderBottom = `2px solid #F7F5EE`;
-    this.tail.style.borderLeft = tailDown ? "none" : "2px solid #F7F5EE";
-    this.tail.style.borderTop = tailDown ? "2px solid #F7F5EE" : "none";
-    this.tail.style.transform = tailDown ? "rotate(45deg)" : "rotate(-135deg)";
   }
 }

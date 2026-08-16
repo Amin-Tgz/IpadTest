@@ -1,6 +1,6 @@
-# CLAUDE.md — Pencil AI
+# CLAUDE.md — Line Pal
 
-Pencil AI is a line-drawing adventure for iPad Safari: an original authored living-line hero rises from the ground, then the child uses Apple Pencil to draw solutions such as shoes, tools, and world objects. The fixed hero has deterministic animation, reliable semantic anchors, short Persian speech bubbles, and generated Persian voice.
+Line Pal (Persian product name: «رفیق خطی») is a line-drawing adventure for iPad Safari: an original authored living-line hero rises from the ground, then the child uses Apple Pencil to draw solutions such as shoes, tools, and world objects. The fixed hero has deterministic animation, reliable semantic anchors, short Persian speech bubbles, generated Persian voice, and persistent conversation/action memory.
 
 Product spec: `plan.md`. Platform/security rules: `rules.md`. Progress log: `docs.md`.
 

@@ -31,4 +31,9 @@ describe("PondScene", () => {
     expect(points[0]).not.toEqual(points.at(-1));
     expect(new Set(points.map((point) => Math.round(point.y))).size).toBeGreaterThan(2);
   });
+
+  it("keeps the tutorial stop point on dry ground before the waterline", () => {
+    expect(pond.approachStopX()).toBeLessThan(pond.x - pond.radiusX);
+    expect(pond.approachStopX()).toBe(752);
+  });
 });

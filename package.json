@@ -1,9 +1,9 @@
 {
-  "name": "pencil-ai",
+  "name": "line-pal",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Pencil AI — Living Line Adventure. A line-drawing adventure on iPad where the user's strokes become a living character.",
+  "description": "Line Pal — an original living-line drawing adventure for iPad.",
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "dev:client": "vite",

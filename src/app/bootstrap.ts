@@ -19,7 +19,6 @@ import { MOTION_CLIPS, type MotionId } from "../animation/motion-clips.js";
 import { QuestEngine, type StoryCommand } from "../story/quest-engine.js";
 import { PondScene } from "../world/pond-scene.js";
 import { Walker, easeToward } from "../world/walker.js";
-import { buildFishLineAttachment } from "../world/hardcoded-objects.js";
 import type { Attachment } from "../character/attachments.js";
 import { attachmentWorldPoints, buildAttachmentFromObject } from "../character/attachments.js";
 import { captureViewport, captureDelta } from "../ai/capture.js";
@@ -29,9 +28,11 @@ import { looksPersian } from "../ai/text.js";
 import type { DrawingAnalysis } from "../ai/schemas.js";
 import type { AIActionRequest } from "../ai/schemas.js";
 import { createSessionStorage } from "../storage/indexed-db.js";
+import { ConversationHistory, type ConversationEntry } from "../story/conversation-history.js";
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO } from "./constants.js";
 import { createDiagnostics } from "./diagnostics.js";
 import { PhaserWorldController } from "../world/phaser-world.js";
+import { farthestToolPoint, fishingHookPosition, movementDestination } from "../world/interaction-geometry.js";
 import { REPAIR_PARTS, SegmentRepairEditor, partColor, type RepairPart } from "../character/segment-repair.js";
 import { WorldEntityRegistry, type WorldEntity } from "../world/world-entity.js";
 import type { PhysicsShape } from "../world/phaser-world.js";
@@ -101,6 +102,7 @@ const speech = new GeneratedSpeech((event, detail) => {
 const idMap = new IdMap();
 const storage = createSessionStorage();
 const worldEntities = new WorldEntityRegistry();
+const conversation = new ConversationHistory();
 
 const getViewport = () => {
   const { viewportWidth: width, viewportHeight: height } = appState.get();
@@ -142,6 +144,7 @@ let pendingDrawingReaction: {
   spoken: string;
   actionId: string;
 } | null = null;
+const navigationMemories = new Map<string, string>();
 let introBumpStartedAt: number | null = null;
 let introTimer: number | null = null;
 const rescueState = new RescueStateController();
@@ -150,6 +153,7 @@ let rescueStartedAt: number | null = null;
 let rescueLadderId: string | null = null;
 const movableObjects = new Map<string, MovableWorldObject>();
 const movableStrokeIds = new Set<string>();
+let fishingLine: { waterPoint: { x: number; y: number }; pullStartedAt: number | null } | null = null;
 
 function activateRig(rig: Rig, playSpawn = true): void {
   rigRuntime = new RigRuntime(rig);
@@ -166,11 +170,6 @@ function activateRig(rig: Rig, playSpawn = true): void {
 }
 
 function startFreePlay(resetCheckpoint = true): void {
-  speakStoryText(
-    "هر چیزی دوست داری بکش یا بنویس؛ من واکنش نشان می‌دم.",
-    "آها! هر چیزی دوست داری بکش یا بنویس؛ من هم واکنش نشان می‌دم.",
-    "delighted",
-  );
   beginAwaitingDrawing("free_draw", resetCheckpoint);
 }
 
@@ -239,7 +238,8 @@ function rebuildWorld(): void {
     worldBuilt = true;
     const pondX = Math.round(w * 1.45);
     pond = new PondScene(pondX, baselineY - 26, 190, 72);
-    walker = new Walker(groundPath, pondX - 70);
+    // Stop on dry ground before the open waterline rather than at its center.
+    walker = new Walker(groundPath, pond.approachStopX());
   } else {
     groundPath.setHorizontalY(baselineY);
     groundPath.extendHorizontalTo(camera.state.x + w * 3);
@@ -310,6 +310,7 @@ function scheduleSave(): void {
       worldEntities: worldEntities.all(),
       entityTransform: rigRuntime?.entityTransform ?? null,
       camera: camera.state,
+      conversation: conversation.snapshot(),
     });
   }, 1500);
 }
@@ -326,11 +327,13 @@ async function restoreSession(): Promise<boolean> {
       worldEntities?: WorldEntity[];
       entityTransform?: { x: number; y: number; rotation: number; scaleX: number; scaleY: number } | null;
       camera?: { x: number; y: number };
+      conversation?: ConversationEntry[];
     }>();
     if (savedQuest?.version !== 3) {
       await storage.clearSession();
       return false;
     }
+    conversation.restore(savedQuest.conversation ?? []);
     if (savedQuest.state === "AWAIT_SHOES" || savedQuest.state === "EQUIP_SHOES") {
       await storage.clearSession();
       shoeProgress.reset();
@@ -402,7 +405,7 @@ async function restoreSession(): Promise<boolean> {
     }
     return true;
   } catch (error) {
-    console.warn("[pencil-ai] session restore failed", error);
+    console.warn("[line-pal] session restore failed", error);
     return false;
   }
 }
@@ -455,9 +458,12 @@ function speakStoryText(
   preset: HeroVoicePreset = "curious",
   audioUrl?: string,
   motion?: MotionId,
+  fallbackAudioUrl?: string,
 ): void {
+  conversation.append("hero", "message", `Bubble: ${bubbleText} Spoken: ${spokenText}`);
+  scheduleSave();
   const id = `beat_${++storyBeatSequence}`;
-  void storyBeats.enqueue({ id, bubble: bubbleText, spoken: spokenText, emotion: preset, audioUrl, motion }).then((result) => {
+  void storyBeats.enqueue({ id, bubble: bubbleText, spoken: spokenText, emotion: preset, audioUrl, fallbackAudioUrl, motion }).then((result) => {
     diagnostics.info("generated_speech", { status: result.status, textLength: spokenText.length, preset, source: result.source });
     if (result.status !== "cancelled") quest.trigger({ type: "bubble_shown" });
   });
@@ -553,8 +559,11 @@ async function resolveDrawingAttempt(): Promise<void> {
       jointsInImageCoords(),
       worldSummary,
       acceptedCategories,
+      conversation.forAI(),
     );
     const analysis = result.analysis;
+    conversation.append("child", "drawing", `New input understood as: ${analysis.interpretation || "unrecognized"}`);
+    scheduleSave();
     const tutorialAction = goalId === "draw_shoes"
       ? "equip_shoes"
       : goalId === "draw_fishing_tool" ? "equip_tool" : null;
@@ -579,7 +588,7 @@ async function resolveDrawingAttempt(): Promise<void> {
       } else if (goalId === "draw_shoes") {
         const addedShoes = equipTutorialShoes(analysis, full.mapping);
         if (shoeProgress.complete) {
-          const successBubble = "آها! حالا هر دو پام کفش دارن؛ بریم!";
+          const successBubble = "چه خفن! حالا هر دو پام کفش دارن؛ بریم!";
           quest.trigger({
             type: "drawing_validated",
             action: "equip_shoes",
@@ -588,7 +597,7 @@ async function resolveDrawingAttempt(): Promise<void> {
             emotion: "delighted",
           });
         } else if (addedShoes > 0) {
-          const missingText = "آها! حالا پای دیگه‌ام هم یک کفش می‌خواد.";
+          const missingText = "رفیق، پای دیگه‌ام هنوز یک کفش می‌خواد.";
           speakStoryText(missingText, missingText, "curious", undefined, "confused");
           beginAwaitingDrawing(goalId, false);
         } else {
@@ -667,8 +676,7 @@ function finishDrawingReaction(
   bubbleText: string,
   spokenText: string,
 ): void {
-  const movementAction = action?.type === "move" || action?.type === "climb";
-  const actionExecuted = !movementAction && executeAIAction(action, entityIds);
+  const actionExecuted = executeAIAction(action, entityIds);
   const actionMotion = actionExecuted && action?.type === "point" ? "point" : undefined;
   speakStoryText(bubbleText, spokenText, emotion, undefined, actionMotion ?? (actionExecuted ? undefined : motionForEmotion(emotion)));
   refreshReviewControls();
@@ -679,14 +687,33 @@ function walkToDrawingReaction(analysis: DrawingAnalysis, entityIds: string[], b
     finishDrawingReaction(analysis.action ?? null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
     return;
   }
+  if (analysis.action?.type === "move" || analysis.action?.type === "climb") {
+    if (!executeAIAction(analysis.action, entityIds)) {
+      finishDrawingReaction(null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
+      return;
+    }
+    const actionId = phaserWorld?.navigationSnapshot().actionId;
+    if (!actionId) {
+      finishDrawingReaction(null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
+      return;
+    }
+    pendingDrawingReaction = {
+      action: null,
+      entityIds,
+      emotion: analysis.reaction.emotion,
+      bubble: bubbleText,
+      spoken: spokenText,
+      actionId,
+    };
+    return;
+  }
   const root = rigRuntime.jointWorld("root");
   const mapping = lastFullMapping;
-  const rightEdge = mapping
-    ? Math.max(...analysis.objects.map((object) => imageToWorldX(object.boundingBox.x + object.boundingBox.width, mapping)))
-    : Number.NaN;
+  const leftEdge = mapping ? Math.min(...analysis.objects.map((object) => imageToWorldX(object.boundingBox.x, mapping))) : Number.NaN;
+  const rightEdge = mapping ? Math.max(...analysis.objects.map((object) => imageToWorldX(object.boundingBox.x + object.boundingBox.width, mapping))) : Number.NaN;
   const clearance = Math.max(42, 46 * rigRuntime.proportionScale);
-  const targetX = rightEdge + clearance;
-  if (!root || !Number.isFinite(targetX) || root.x >= targetX - 12) {
+  const targetX = root && root.x <= leftEdge ? leftEdge - clearance : rightEdge + clearance;
+  if (!root || !Number.isFinite(targetX) || Math.abs(root.x - targetX) < 12) {
     finishDrawingReaction(analysis.action ?? null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
     return;
   }
@@ -706,7 +733,9 @@ function walkToDrawingReaction(analysis: DrawingAnalysis, entityIds: string[], b
     actionId: navigation.actionId,
   };
   animController.playById("walk");
-  diagnostics.info("drawing_reaction_walk_started", { actionId: navigation.actionId, targetX, rightEdge });
+  navigationMemories.set(navigation.actionId, `approach the newly drawn object and stop before it at x=${Math.round(targetX)}`);
+  conversation.append("system", "action", `Hero started walking toward the new drawing; destination x=${Math.round(targetX)}.`);
+  diagnostics.info("drawing_reaction_walk_started", { actionId: navigation.actionId, targetX, leftEdge, rightEdge });
 }
 
 function inferredPhysicsShape(object: DrawingAnalysis["objects"][number]): PhysicsShape | null {
@@ -770,7 +799,7 @@ function startLadderRescue(
   appState.setMode("rescuing");
   groundChangePending = false;
   animController.playById("ladder_pickup");
-  const line = "آها! نردبان رو می‌گیرم؛ محکم نگهش دار!";
+  const line = "خب مشتی، نردبان رو می‌گیرم؛ محکم نگهش دار!";
   speakStoryText(line, line, "effort", undefined, "ladder_pickup");
   diagnostics.info("ladder_rescue_started", { entityId, edge: plan.edge, waypoints: plan.waypoints.length });
   refreshReviewControls();
@@ -854,16 +883,14 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
       if (!hand) return false;
       animController.playById("point");
       diagnostics.info("ai_point_started", { targetId: target.id, hand, target: targetPoint });
+      conversation.append("system", "action", `Hero pointed at ${target.type} (${target.id}) with the ${hand} hand.`);
       return true;
     }
     case "move": {
       const root = rigRuntime.jointWorld("root");
-      const direction = action.direction === "left" ? -1 : action.direction === "right" ? 1 : target && root && target.bounds.x < root.x ? -1 : 1;
-      const needsClimb = target?.physicsShape === "stairs" || target?.physicsShape === "slope";
-      const targetX = target
-        ? target.bounds.x + (needsClimb ? (direction > 0 ? target.bounds.width + 16 : -16) : target.bounds.width / 2)
-        : (root?.x ?? 0) + direction * Math.max(140, Math.min(320, action.durationMs * 0.18));
-      const result = needsClimb
+      const destination = movementDestination(root?.x ?? 0, action.direction, action.durationMs, target);
+      const targetX = destination.x;
+      const result = destination.needsClimb
         ? phaserWorld?.climbTo(targetX, undefined, target?.id ?? null)
         : phaserWorld?.walkTo(targetX, undefined, target?.id ?? null);
       if (!result?.started) {
@@ -871,6 +898,8 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
         return false;
       }
       animController.playById("walk");
+      navigationMemories.set(result.actionId, `move${target ? ` across/toward ${target.type} (${target.id})` : ""} to x=${Math.round(targetX)}`);
+      conversation.append("system", "action", `Hero started the requested move${target ? ` toward ${target.type} (${target.id})` : ""}.`);
       return true;
     }
     case "jump":
@@ -879,6 +908,7 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
         return false;
       }
       animController.playById("happy");
+      conversation.append("system", "action", "Hero jumped after the child's request.");
       return true;
     case "climb": {
       const root = rigRuntime.jointWorld("root");
@@ -892,6 +922,8 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
         return false;
       }
       animController.playById("walk");
+      navigationMemories.set(result.actionId, `climb past ${target?.type ?? "the requested obstacle"}`);
+      conversation.append("system", "action", `Hero started climbing ${target?.type ?? "the requested obstacle"}.`);
       return true;
     }
     case "equip":
@@ -999,19 +1031,20 @@ function castSequence(): void {
   animController.playById("cast_rod");
   window.setTimeout(() => {
     if (!pond || !rigRuntime) return;
-    const hand = rigRuntime.restJoint("right_hand");
-    if (hand) {
-      attachments = attachments.filter((a) => a.id !== "fish_line");
-      attachments.push(buildFishLineAttachment(hand, { x: pond.x, y: pond.y - 20 }, 60));
-    }
+    fishingLine = { waterPoint: { x: pond.x - pond.radiusX * 0.12, y: pond.y - 2 }, pullStartedAt: null };
     pond.triggerFishJump(performance.now());
+    conversation.append("system", "action", "Hero cast the child's fishing tool; its line runs from the rod tip to a hook over the pond.");
   }, 700);
   animController.onClipEnd = (clipId) => {
     if (clipId === "cast_rod") {
       animController.playById("pull_fish");
-      if (pond) pond.fish.caught = true;
+      if (pond) {
+        pond.fish.caught = true;
+        if (fishingLine) fishingLine.pullStartedAt = performance.now();
+      }
       animController.onClipEnd = (innerId) => {
         if (innerId === "pull_fish") {
+          conversation.append("system", "action", "Hero pulled the fish from the pond with the hook at the rod line's end.");
           quest.trigger({ type: "fish_sequence_done" });
         }
       };
@@ -1022,7 +1055,7 @@ function castSequence(): void {
 quest.onCommand = (command: StoryCommand) => {
   switch (command.type) {
     case "bubble":
-      speakStoryText(command.bubble, command.spoken, command.emotion, command.audioUrl, command.motion);
+      speakStoryText(command.bubble, command.spoken, command.emotion, command.audioUrl, command.motion, command.fallbackAudioUrl);
       break;
     case "anim":
       animController.playById(command.clip);
@@ -1189,30 +1222,6 @@ function hideStageButton(): void {
   stageButton.style.opacity = "0";
   stageButton.style.pointerEvents = "none";
 }
-
-const hintEl = document.createElement("div");
-hintEl.style.cssText = [
-  "position:absolute",
-  "z-index:30",
-  "top:max(18px, env(safe-area-inset-top))",
-  "left:50%",
-  "transform:translateX(-50%)",
-  "color:#F7F5EE",
-  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
-  "font-size:15px",
-  "letter-spacing:0.3px",
-  "background:rgba(16,59,70,0.75)",
-  "padding:8px 18px",
-  "border-radius:999px",
-  "border:1px solid rgba(247,245,238,0.25)",
-  "direction:rtl",
-  "opacity:0",
-  "transition:opacity 400ms",
-  "pointer-events:none",
-].join(";");
-hintEl.textContent = "با مداد چیزی بکش؛ او نگاه می‌کند و واکنش نشان می‌دهد.";
-appEl.appendChild(hintEl);
-let hintVisible = false;
 
 const stageTitleEl = document.createElement("div");
 stageTitleEl.style.cssText = [
@@ -1444,8 +1453,8 @@ function finalizeCharacter(): void {
   // the spawn animation is still playing, that ink remains after this checkpoint.
   beginAwaitingDrawing("free_draw");
   if (storage) void storage.saveManifest(manifest);
-  console.log("[pencil-ai] character manifest:", JSON.stringify(manifest, null, 2));
-  speakStoryText("آها! پس تو این شکلی…");
+  console.log("[line-pal] character manifest:", JSON.stringify(manifest, null, 2));
+  speakStoryText("اوه! پس تو این شکلی…");
 }
 
 reviveEl.addEventListener("click", () => startAnalysis(false));
@@ -1525,8 +1534,6 @@ repairDoneEl.addEventListener("click", () => {
 const pointer = new PointerInput(canvas, store, camera, {
   onStrokeStart: () => {
     pencilDown = true;
-    hintEl.style.opacity = "0";
-    hintVisible = false;
     hideRevive();
     hideReview();
     hideSampleDemo();
@@ -1642,6 +1649,7 @@ function enterFallenRescue(): void {
   walking = false;
   animController.playById("sad");
   beginAwaitingRescue(true);
+  conversation.append("system", "action", "Hero fell through the erased ground and is waiting below for a drawn ladder.");
   const hint = "اوه! افتادم... یک نردبان پله‌پله برام بکش تا بیام بالا.";
   speakStoryText(hint, hint, "sad", undefined, "sad");
   diagnostics.info("hero_waiting_for_ladder", {
@@ -1690,7 +1698,8 @@ function updateLadderRescue(now: number): void {
   rescuePlan = null;
   rescueLadderId = null;
   animController.playById("happy");
-  const success = "آها! رسیدم بالا؛ نردبانت هم همین‌جا می‌مونه.";
+  conversation.append("system", "action", "Hero picked up the child's ladder, placed it at the intact edge, climbed it, and returned safely to the ground.");
+  const success = "هوف! رسیدم بالا؛ نردبانت هم همین‌جا می‌مونه.";
   speakStoryText(success, success, "delighted", undefined, "happy");
   beginAwaitingDrawing("free_draw", true);
   scheduleSave();
@@ -1714,6 +1723,42 @@ function drawMovableObjects(): void {
     }
   }
   ctx.restore();
+}
+
+function activeRodTip(): { x: number; y: number } | null {
+  if (!rigRuntime) return null;
+  const hand = rigRuntime.jointWorld("right_hand");
+  if (!hand) return null;
+  const tool = [...attachments].reverse().find((attachment) =>
+    attachment.visible && attachment.kind === "held_tool" && attachment.boneId === "right_hand",
+  );
+  if (!tool) return hand;
+  return farthestToolPoint(hand, attachmentWorldPoints(tool, rigRuntime));
+}
+
+function drawFishingLine(target: CanvasRenderingContext2D, now: number): void {
+  if (!fishingLine || !pond) return;
+  const tip = activeRodTip();
+  if (!tip) return;
+  const pullProgress = fishingLine.pullStartedAt === null
+    ? 0
+    : Math.min(1, Math.max(0, (now - fishingLine.pullStartedAt) / MOTION_CLIPS.pull_fish.durationMs));
+  const hook = fishingHookPosition(tip, fishingLine.waterPoint, pullProgress);
+  const sag = (1 - pullProgress) * 38;
+  target.save();
+  target.strokeStyle = PALETTE.primaryInk;
+  target.lineWidth = 2;
+  target.lineCap = "round";
+  target.beginPath();
+  target.moveTo(tip.x, tip.y);
+  target.quadraticCurveTo((tip.x + hook.x) / 2, Math.max(tip.y, hook.y) + sag, hook.x, hook.y);
+  target.stroke();
+  target.beginPath();
+  target.moveTo(hook.x, hook.y - 2);
+  target.quadraticCurveTo(hook.x + 1, hook.y + 10, hook.x + 8, hook.y + 5);
+  target.stroke();
+  if (pond.fish.caught) pond.drawCaughtFish(target, { x: hook.x + 9, y: hook.y + 5 });
+  target.restore();
 }
 
 function renderFrame(now: number, resolution = window.devicePixelRatio || 1): void {
@@ -1774,6 +1819,9 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       phaserWorld?.placeCharacter(rigRuntime);
       if (walker.finished) {
         walking = false;
+        pond?.triggerFishJump(now);
+        conversation.append("system", "action", "Hero reached the pond, stopped on dry ground before the water, and saw a fish jump out and fall back in.");
+        scheduleSave();
         quest.trigger({ type: "walk_complete" });
         animController.playById("stop_at_pond");
       }
@@ -1801,6 +1849,20 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
         if (animController.currentId === "walk") animController.playById("idle");
         const pending = pendingDrawingReaction;
         const snapshot = phaserWorld?.navigationSnapshot();
+        if (snapshot?.actionId) {
+          const memory = navigationMemories.get(snapshot.actionId);
+          if (memory) {
+            conversation.append(
+              "system",
+              "action",
+              snapshot.state === "failed"
+                ? `Hero could not complete the requested action (${memory}); reason: ${snapshot.failureReason ?? "unknown"}.`
+                : `Hero completed the requested action: ${memory}.`,
+            );
+            navigationMemories.delete(snapshot.actionId);
+            scheduleSave();
+          }
+        }
         if (pending && snapshot?.actionId === pending.actionId) {
           pendingDrawingReaction = null;
           diagnostics.info("drawing_reaction_walk_finished", {
@@ -1861,14 +1923,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       });
     }
 
-    if (pond?.fish.caught) {
-      const line = attachments.find((a) => a.id === "fish_line");
-      if (line) {
-        const points = attachmentWorldPoints(line, rigRuntime).at(0) ?? [];
-        const end = points[points.length - 1];
-        if (end) pond.drawCaughtFish(ctx, { x: end.x, y: end.y + 8 });
-      }
-    }
+    drawFishingLine(ctx, now);
     ctx.restore();
   }
 
@@ -1907,18 +1962,6 @@ appState.subscribe((state) => {
     control.disabled = !inkControlsVisible;
     control.setAttribute("aria-hidden", inkControlsVisible ? "false" : "true");
   }
-  if ((state.mode === "awaiting" || state.mode === "fallen_waiting_rescue") && state.viewportWidth > 0) {
-    window.setTimeout(() => {
-      if (!hintVisible && store.active().filter((stroke) => stroke.entityId === null).length === 0) {
-        hintVisible = true;
-        hintEl.style.opacity = "1";
-      }
-    }, 1800);
-  }
-  if (state.mode === "live" && hintVisible) {
-    hintEl.style.opacity = "0";
-    hintVisible = false;
-  }
 });
 
 window.addEventListener("resize", resize);
@@ -1943,6 +1986,7 @@ speech.preload(Object.values(QUESTS).flatMap((questDefinition) =>
     text: line.spoken,
     preset: line.emotion,
     audioUrl: line.audioUrl,
+    fallbackAudioUrl: line.fallbackAudioUrl,
   })),
 ));
 
@@ -1989,4 +2033,4 @@ if (typeof navigator !== "undefined" && "serviceWorker" in navigator && import.m
 // The experience deliberately waits for the start gesture above. Safari only
 // permits reliable Web Audio playback after a direct user interaction.
 
-console.log("[pencil-ai] phase 7 bootstrap ready");
+console.log("[line-pal] bootstrap ready");

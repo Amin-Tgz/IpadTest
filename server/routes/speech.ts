@@ -19,7 +19,7 @@ export function speechRoute(generator: SpeechGenerator): Router {
       res.send(audio.bytes);
     } catch (error) {
       const status = error instanceof z.ZodError ? 400 : 502;
-      console.error("[pencil-ai] tts_failed", error instanceof Error ? error.message : error);
+      console.error("[line-pal] tts_failed", error instanceof Error ? error.message : error);
       res.status(status).json({ error: status === 400 ? "invalid_speech_request" : "speech_generation_failed" });
     }
   });

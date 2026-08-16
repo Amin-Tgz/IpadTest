@@ -24,6 +24,10 @@ export class PondScene {
     this.fish.jumpStart = now;
   }
 
+  approachStopX(clearance = 58): number {
+    return this.x - this.radiusX - Math.max(0, clearance);
+  }
+
   fishPosition(now: number): { x: number; y: number } | null {
     if (!this.fish.jumping || this.fish.caught) return null;
     const t = Math.min(1, (now - this.fish.jumpStart) / JUMP_DURATION_MS);

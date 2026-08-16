@@ -1,6 +1,6 @@
-# Pencil AI
+# Line Pal — رفیق خطی
 
-Pencil AI is a line-drawing adventure designed for iPad and Apple Pencil. An original living-line hero rises from the ground, then a child draws the shoes, tools, obstacles, and scenery that help it move through the world.
+Line Pal is a line-drawing adventure designed for iPad and Apple Pencil. An original living-line hero rises from the ground, then a child draws the shoes, tools, obstacles, and scenery that help it move through the world.
 
 The central rule is simple: **the child's solution strokes stay the artwork**. AI understands the drawing; an authored hero, deterministic animation, and physics execute the result.
 
@@ -10,10 +10,10 @@ The central rule is simple: **the child's solution strokes stay the artwork**. A
 - Starts immediately with a fixed, original line hero—no body analysis or joint editor.
 - Animates authored spline paths for idle, blink, look, talk, protest, effort, reaction, and walking.
 - Understands later drawings such as clothing, tools, platforms, stairs, obstacles, symbols, and scene objects.
-- Keeps recognized drawings visible and walks the character beyond the drawing's right edge before reacting.
+- Keeps recognized drawings visible, approaches them from the safe side, and executes requested movement across bridges and platforms.
 - Extends the white ground line and its Matter physics floor as the camera moves.
 - Generates a controllable Persian character voice with six consistent performance presets and separate bubble/spoken text.
-- Persists strokes, character data, attachments, world entities, camera, and story state in IndexedDB.
+- Persists strokes, attachments, world entities, camera, story state, conversation, and completed-action history in IndexedDB.
 - Installs as a fullscreen landscape PWA.
 
 ## Current status
@@ -94,8 +94,8 @@ AI_THINKING_LEVEL=low
 ENABLE_LEGACY_CHARACTER_ANALYSIS=0
 
 TTS_MODEL=gemini-2.5-flash-tts
-TTS_VOICE=Puck
-TTS_STYLE=با صدایی جوان، بازیگوش، گرم و کمی خش‌دار؛ اندکی تو دماغی، با ضرباهنگ تند، مکث‌های کمیک و فارسی معیار ایران
+TTS_VOICE=Leda
+TTS_STYLE=با صدایی جوان، گرم و بازیگوش؛ گاهی کمی غرغرو و عصبانی بامزه؛ بدون تکرار زیاد آها
 ```
 
 `AI_API_KEY` is read only by the Express server. Do not expose it through Vite variables or commit `.env`.
@@ -129,7 +129,7 @@ npm start
 2. Watch the moving ground-line bump rise into the hero.
 3. Draw two shoes when the hero asks, together or one at a time, then tap **▶ ببین نقاشی‌مو**. Each foot accepts exactly one shoe and walking waits for both.
 4. Draw a fishing tool for the second tutorial request.
-5. Continue drawing or writing freely; the hero walks to the result, reacts, and speaks Persian.
+5. Continue drawing or writing freely; the hero reacts in Persian and can follow written movement requests, including crossing a recognized bridge.
 
 Refreshing during the incomplete shoe lesson restarts that lesson with two empty foot slots; completed story progress can still be restored.
 
@@ -145,7 +145,9 @@ http://localhost:3456/?debug=speech
 
 ## Generated voice
 
-The default actor is Gemini `Puck`, directed toward a youthful, playful, warm and lightly raspy Iranian-Persian performance. Tutorial dialogue is served from local pre-generated WAV-encoded `.pwa` assets (the neutral extension prevents download-manager interception); open-ended reactions use the same configured actor through generated TTS and one of six presets: curious, protesting, confused, effort, delighted, or sad.
+The default actor is Gemini `Leda`, directed toward a youthful, warm Iranian-Persian performance that can become mock-grumpy without losing clarity. Tutorial and open-ended reactions first use that configured actor through generated TTS and one of six presets: curious, protesting, confused, effort, delighted, or sad. Reactions avoid repetitive interjections and may occasionally use «رفیق»، «مشتی»، or «چه خفن». Until the checked-in clips can be regenerated as Leda, the older local tutorial recordings are used only as a last-resort fallback when generation fails, so a provider outage does not create a silent story beat.
+
+Conversation memory is stored with the local session. Each recognized child input, hero reply, action start, and completed movement is added to a bounded history and included in later drawing-analysis requests, allowing follow-ups such as written movement commands to refer to earlier objects and actions.
 
 Gemini returns 24 kHz PCM audio. The server validates the AI response, wraps PCM as WAV, and keeps up to 48 repeated lines in memory. The client uses one tap-unlocked Web Audio context so delayed responses can play reliably on iPad Safari.
 

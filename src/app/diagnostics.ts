@@ -19,8 +19,8 @@ export function createDiagnostics(root: HTMLElement): Diagnostics {
   const write = (level: "INFO" | "ERROR", event: string, detail?: unknown): void => {
     const suffix = detail === undefined ? "" : ` — ${format(detail).slice(0, 360)}`;
     const line = `${new Date().toLocaleTimeString()} ${level} ${event}${suffix}`;
-    if (level === "ERROR") console.error(`[pencil-ai] ${event}`, detail);
-    else console.info(`[pencil-ai] ${event}`, detail ?? "");
+    if (level === "ERROR") console.error(`[line-pal] ${event}`, detail);
+    else console.info(`[line-pal] ${event}`, detail ?? "");
   };
 
   return { info: (event, detail) => write("INFO", event, detail), error: (event, detail) => write("ERROR", event, detail) };

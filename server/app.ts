@@ -40,7 +40,7 @@ export function createApp(deps: AppDeps = {}) {
     const event = typeof req.body?.event === "string" ? req.body.event.slice(0, 80) : "invalid_event";
     const detail = req.body?.detail && typeof req.body.detail === "object" ? req.body.detail : {};
     const userAgent = typeof req.body?.userAgent === "string" ? req.body.userAgent.slice(0, 240) : "unknown";
-    console.log(`[pencil-ai] speech_debug ${event}`, { ...detail, userAgent });
+    console.log(`[line-pal] speech_debug ${event}`, { ...detail, userAgent });
     res.status(204).end();
   });
 
@@ -62,7 +62,7 @@ export function createApp(deps: AppDeps = {}) {
       res.status(400).json({ error: "invalid_json" });
       return;
     }
-    console.error("[pencil-ai] unhandled error:", error);
+    console.error("[line-pal] unhandled error:", error);
     res.status(500).json({ error: "internal_error" });
   });
 
@@ -82,11 +82,11 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     enableLegacyCharacterAnalysis: process.env.ENABLE_LEGACY_CHARACTER_ANALYSIS === "1",
   });
   const server = app.listen(config.PORT, () => {
-    console.log(`[pencil-ai] server listening on http://localhost:${config.PORT}`);
+    console.log(`[line-pal] server listening on http://localhost:${config.PORT}`);
   });
   server.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EADDRINUSE") {
-      console.error(`[pencil-ai] port ${config.PORT} is already in use. Stop the existing Pencil AI server or change PORT in .env.`);
+      console.error(`[line-pal] port ${config.PORT} is already in use. Stop the existing Line Pal server or change PORT in .env.`);
       process.exitCode = 1;
       return;
     }

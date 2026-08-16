@@ -1,7 +1,7 @@
 {
-  "name": "Pencil AI",
-  "short_name": "Pencil AI",
-  "description": "Living Line Adventure — draw a character, it comes alive.",
+  "name": "Line Pal — رفیق خطی",
+  "short_name": "Line Pal",
+  "description": "Help an original living-line hero with drawings, words, and world objects.",
   "start_url": "/",
   "display": "fullscreen",
   "orientation": "landscape",

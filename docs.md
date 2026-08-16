@@ -93,7 +93,7 @@ Living document. Each plan phase ends with: test result, commit hash, notes, ope
 
 ## Drawing reaction movement and speech checkpoint
 
-- Recognized free-play drawings remain visible; the character walks beyond the drawing's right edge before performing and speaking its reaction.
+- Recognized free-play drawings remain visible; the character approaches from the nearest safe side before performing and speaking its reaction.
 - The baseline and its Matter collision floor extend ahead of the camera, preserving continuous walking as the world scrolls.
 - Persian speech now uses server-generated Gemini Flash TTS (`gemini-2.5-flash-tts`, `Leda`) instead of device voices. The server converts 24 kHz PCM to WAV, caches repeated lines in memory, and the client plays through a tap-unlocked Web Audio context on iPad Safari.
 - `TTS_MODEL`, `TTS_VOICE`, and `TTS_STYLE` provide voice and performance control without exposing provider credentials to the client.
@@ -109,3 +109,14 @@ Living document. Each plan phase ends with: test result, commit hash, notes, ope
 - Reactions now carry a controlled emotion, separate Persian `bubble` and `spoken` strings, and a non-blocking audio fallback. Tutorial voice lines preload into a client/server cache when available.
 - The legacy character-analysis route is opt-in with `ENABLE_LEGACY_CHARACTER_ANALYSIS=1`; it is not registered in normal startup.
 - Verification: strict typecheck passed, 32 test files / 163 tests passed, production build passed, and offline Playwright checks covered the intro bump, tutorial bubbles, DPR 1/2 rendering, Pencil/mouse shoe strokes, and review-button reveal.
+
+## Line Pal continuity and interaction checkpoint
+
+- The local product identity is now **Line Pal / رفیق خطی**. The public GitHub repository is intentionally not renamed until the exact repository slug is approved.
+- A bounded conversation ledger persists with the session. It records child interpretations, hero bubble/spoken replies, action starts, arrivals, falls, fishing, and rescue milestones, and sends the recent history with each structured drawing-analysis request.
+- Explicit AI `move` and `climb` actions now execute. Platforms and bridges target the far edge so requests to cross them complete; ordinary reactions approach the near side rather than walking through an object.
+- The tutorial walker stops before the pond's left waterline. On arrival a fish follows a full jump arc, re-enters the water, and disappears.
+- Fishing line geometry is generated each frame from the transformed tip of the child's held tool to a J-shaped hook. The hook and caught fish remain at the line end instead of appearing at the hand anchor.
+- Web Audio retries local clip delivery, falls back to generated speech if a static clip cannot load or decode, rechecks suspended contexts, and uses a post-duration watchdog only for missed `onended` browser events.
+- The default actor is `Leda`. Performance direction allows occasional mock anger and sparse «رفیق»، «مشتی»، and «چه خفن», while explicitly discouraging repetitive «آها/اهان». Leda generation is always attempted first; because the provider connection timed out during the asset refresh, older local tutorial clips remain only as a last-resort anti-silence fallback until they can be regenerated.
+- The persistent top drawing hint, the free-play announcement, and the speech-bubble tail were removed.

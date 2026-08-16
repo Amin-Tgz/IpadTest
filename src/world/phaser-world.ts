@@ -484,6 +484,18 @@ export class PhaserWorldController {
           common,
         ));
       }
+    } else if (spec.shape === "platform") {
+      // Treat a bridge/platform as a thin walkable surface at the lower edge of
+      // its visual bounds. A full bounding-box collider becomes a wall at the
+      // approach edge and prevents the requested crossing.
+      const thickness = Math.max(8, Math.min(14, spec.height * 0.2));
+      bodies.push(scene.matter.add.rectangle(
+        spec.x + spec.width / 2,
+        spec.y + spec.height - thickness / 2,
+        Math.max(8, spec.width),
+        thickness,
+        common,
+      ));
     } else {
       bodies.push(scene.matter.add.rectangle(
         spec.x + spec.width / 2,

@@ -6,6 +6,7 @@ export interface SpeechPlaybackRequest {
   text: string;
   preset?: HeroVoicePreset;
   audioUrl?: string;
+  fallbackAudioUrl?: string;
   onPlaybackStart?: () => void;
 }
 
@@ -24,6 +25,7 @@ interface ActivePlayback {
   resolve: (result: SpeechPlaybackResult) => void;
   startedAt: number;
   sourceKind: "static" | "generated";
+  watchdog: number | null;
 }
 
 const GENERATED_BUDGET_MS = 8_000;
@@ -64,7 +66,10 @@ export class GeneratedSpeech {
 
   preload(lines: SpeechPlaybackRequest[]): void {
     for (const line of lines) {
-      void this.loadAudio(line, new AbortController().signal).catch((error) => {
+      const preloadRequest = line.fallbackAudioUrl
+        ? { ...line, audioUrl: line.fallbackAudioUrl, fallbackAudioUrl: undefined }
+        : line;
+      void this.loadAudio(preloadRequest, new AbortController().signal).catch((error) => {
         this.diagnostic("preload_error", { textLength: line.text.length, message: describe(error) });
       });
     }
@@ -83,7 +88,7 @@ export class GeneratedSpeech {
     const startedAt = performance.now();
 
     return new Promise<SpeechPlaybackResult>((resolve) => {
-      const active: ActivePlayback = { token, abort, source: null, resolve, startedAt, sourceKind };
+      const active: ActivePlayback = { token, abort, source: null, resolve, startedAt, sourceKind, watchdog: null };
       this.active = active;
       this.diagnostic("generation_requested", {
         ...this.snapshot(),
@@ -100,6 +105,7 @@ export class GeneratedSpeech {
     if (!active) return;
     this.active = null;
     active.abort.abort();
+    if (active.watchdog !== null) window.clearTimeout(active.watchdog);
     if (active.source) {
       active.source.onended = null;
       try {
@@ -125,25 +131,32 @@ export class GeneratedSpeech {
 
   private async beginPlayback(active: ActivePlayback, request: SpeechPlaybackRequest): Promise<void> {
     try {
-      const bytes = await this.loadAudio(request, active.abort.signal);
-      if (!this.isActive(active)) return;
       const context = this.ensureContext();
-      await context.resume();
-      const buffer = await context.decodeAudioData(bytes.slice(0));
+      await this.ensureRunning(context, active.abort.signal);
+      const buffer = await this.decodeWithGeneratedFallback(active, request, context);
       if (!this.isActive(active)) return;
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(context.destination);
       source.onended = () => {
         if (!this.isActive(active)) return;
+        if (active.watchdog !== null) window.clearTimeout(active.watchdog);
         this.active = null;
         const result = this.result(active, "played");
         this.diagnostic("playback_ended", { ...this.snapshot(), durationMs: result.durationMs });
         active.resolve(result);
       };
       active.source = source;
-      request.onPlaybackStart?.();
       source.start();
+      request.onPlaybackStart?.();
+      active.watchdog = window.setTimeout(() => {
+        if (!this.isActive(active)) return;
+        source.onended = null;
+        this.active = null;
+        const result = this.result(active, "played");
+        this.diagnostic("playback_watchdog_completed", { ...this.snapshot(), durationMs: result.durationMs });
+        active.resolve(result);
+      }, Math.ceil(buffer.duration * 1000) + 1500);
       this.diagnostic("playback_started", {
         ...this.snapshot(),
         durationSeconds: Math.round(buffer.duration * 100) / 100,
@@ -157,6 +170,41 @@ export class GeneratedSpeech {
       const result = this.result(active, "failed");
       this.diagnostic("playback_error", { ...this.snapshot(), message: describe(error), durationMs: result.durationMs });
       active.resolve(result);
+    }
+  }
+
+  private async ensureRunning(context: AudioContext, signal: AbortSignal): Promise<void> {
+    await context.resume();
+    if (context.state === "running") return;
+    await delay(80, signal);
+    await context.resume();
+    const resumedState = context.state as AudioContextState;
+    if (resumedState !== "running") throw new Error(`audio context is ${resumedState}`);
+  }
+
+  private async decodeWithGeneratedFallback(
+    active: ActivePlayback,
+    request: SpeechPlaybackRequest,
+    context: AudioContext,
+  ): Promise<AudioBuffer> {
+    try {
+      const bytes = await this.loadAudio(request, active.abort.signal);
+      return await context.decodeAudioData(bytes.slice(0));
+    } catch (error) {
+      if (request.fallbackAudioUrl && !active.abort.signal.aborted) {
+        active.sourceKind = "static";
+        this.diagnostic("generated_fallback_static", { textLength: request.text.length, message: describe(error) });
+        const fallback = { text: request.text, preset: request.preset, audioUrl: request.fallbackAudioUrl } satisfies SpeechPlaybackRequest;
+        const bytes = await this.loadAudio(fallback, active.abort.signal);
+        return context.decodeAudioData(bytes.slice(0));
+      }
+      if (!request.audioUrl || active.abort.signal.aborted) throw error;
+      this.audioCache.delete(this.cacheKey(request));
+      active.sourceKind = "generated";
+      this.diagnostic("static_fallback_generated", { textLength: request.text.length, message: describe(error) });
+      const fallback = { text: request.text, preset: request.preset } satisfies SpeechPlaybackRequest;
+      const bytes = await this.loadAudio(fallback, active.abort.signal);
+      return context.decodeAudioData(bytes.slice(0));
     }
   }
 
@@ -196,9 +244,23 @@ export class GeneratedSpeech {
   }
 
   private async fetchStatic(url: string, signal: AbortSignal): Promise<ArrayBuffer> {
-    const response = await fetch(url, { signal });
-    if (!response.ok) throw new Error(`static speech returned ${response.status}`);
-    return response.arrayBuffer();
+    let lastError: unknown = new Error("static speech failed");
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await fetch(url, { signal, cache: attempt === 1 ? "default" : "reload" });
+        if (response.ok) return await response.arrayBuffer();
+        lastError = new Error(`static speech returned ${response.status}`);
+        if (!isRetryableSpeechStatus(response.status)) throw lastError;
+      } catch (error) {
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+        lastError = error;
+      }
+      if (attempt === 1) {
+        this.diagnostic("static_retry", { url, attempt: 2, message: describe(lastError) });
+        await delay(RETRY_DELAY_MS, signal);
+      }
+    }
+    throw lastError;
   }
 
   private async fetchGenerated(text: string, preset: HeroVoicePreset, outerSignal: AbortSignal): Promise<ArrayBuffer> {

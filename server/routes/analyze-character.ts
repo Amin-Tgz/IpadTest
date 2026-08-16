@@ -76,7 +76,7 @@ export function analyzeCharacterRoute(provider: AIProvider, config: ServerConfig
         analysis = sanitizeCharacterAnalysis(raw, body.canvas);
         if (!characterHasPartRegions(analysis)) throw new Error("recognized character must include body partRegions");
       } catch (error) {
-        console.warn("[pencil-ai] character_analysis_repair_requested", {
+        console.warn("[line-pal] character_analysis_repair_requested", {
           reason: error instanceof Error ? error.message : "validation failed",
         });
         const repair = await provider.complete({
@@ -90,7 +90,7 @@ export function analyzeCharacterRoute(provider: AIProvider, config: ServerConfig
         });
         analysis = sanitizeCharacterAnalysis(extractJson(repair.text), body.canvas);
         if (!characterHasPartRegions(analysis)) {
-          console.warn("[pencil-ai] character_segmentation_fallback_required", {
+          console.warn("[line-pal] character_segmentation_fallback_required", {
             reason: "AI repair still returned no partRegions; client will infer them from joints",
           });
         }
@@ -104,7 +104,7 @@ export function analyzeCharacterRoute(provider: AIProvider, config: ServerConfig
       });
     } catch (error) {
       const status = error instanceof z.ZodError ? 400 : 422;
-      console.error("[pencil-ai] character_analysis_failed", {
+      console.error("[line-pal] character_analysis_failed", {
         status,
         message: error instanceof Error ? error.message : "unknown error",
       });

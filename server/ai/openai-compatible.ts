@@ -40,7 +40,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     let lastError: unknown = null;
     for (const mode of this.jsonModes) {
       const startedAt = Date.now();
-      console.info("[pencil-ai] provider_request_started", {
+      console.info("[line-pal] provider_request_started", {
         model: this.model,
         mode,
         timeoutMs: this.client.timeout,
@@ -66,7 +66,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         if (!text.trim()) {
           throw new Error("empty completion from provider");
         }
-        console.info("[pencil-ai] provider_request_succeeded", {
+        console.info("[line-pal] provider_request_succeeded", {
           model: completion.model,
           mode,
           elapsedMs: Date.now() - startedAt,
@@ -75,7 +75,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       } catch (error) {
         lastError = error;
         const status = (error as OpenAiLikeError).status;
-        console.error("[pencil-ai] provider_request_failed", {
+        console.error("[line-pal] provider_request_failed", {
           model: this.model,
           mode,
           elapsedMs: Date.now() - startedAt,

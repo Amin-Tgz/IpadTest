@@ -97,7 +97,7 @@ export class GeminiSpeechGenerator implements SpeechGenerator {
     const wav = pcmToWav(Buffer.from(inline.data, "base64"), sampleRate);
     this.cache.set(key, wav);
     while (this.cache.size > 48) this.cache.delete(this.cache.keys().next().value!);
-    console.info("[pencil-ai] tts_generated", {
+    console.info("[line-pal] tts_generated", {
       model: this.config.TTS_MODEL,
       voice: this.config.TTS_VOICE,
       preset,

@@ -8,6 +8,7 @@ export interface StoryBeat {
   spoken: string;
   emotion: HeroVoicePreset;
   audioUrl?: string;
+  fallbackAudioUrl?: string;
   motion?: MotionId;
   minimumReadMs?: number;
 }
@@ -42,6 +43,7 @@ export class StoryBeatCoordinator {
         text: beat.spoken,
         preset: beat.emotion,
         audioUrl: beat.audioUrl,
+        fallbackAudioUrl: beat.fallbackAudioUrl,
         onPlaybackStart: startMotion,
       });
       if (result.status === "failed") startMotion();

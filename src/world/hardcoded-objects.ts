@@ -62,28 +62,3 @@ export function buildRodAttachment(anchor: { x: number; y: number }): Attachment
     drawOrder: 7,
   };
 }
-
-export function buildFishLineAttachment(
-  anchor: { x: number; y: number },
-  target: { x: number; y: number },
-  sag = 60,
-): Attachment {
-  const points: Array<{ x: number; y: number }> = [];
-  const steps = 14;
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const x = anchor.x + (target.x - anchor.x) * t;
-    const y = anchor.y + (target.y - anchor.y) * t + Math.sin(t * Math.PI) * sag;
-    points.push({ x, y });
-  }
-  return {
-    id: "fish_line",
-    kind: "held_tool",
-    boneId: "right_hand",
-    sourceStrokeIds: ["fish_line"],
-    strokes: [{ sourceStrokeId: "fish_line", localPoints: toLocalPoints(points, anchor), color: PALETTE.primaryInk, baseWidth: 2 }],
-    localTransform: { ...IDENTITY_ENTITY_TRANSFORM },
-    visible: true,
-    drawOrder: 6,
-  };
-}

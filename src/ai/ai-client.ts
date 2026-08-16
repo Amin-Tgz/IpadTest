@@ -1,4 +1,5 @@
 import type { CharacterAnalyzeResult, DrawingAnalyzeResult, DrawingAnalysis } from "./schemas.js";
+import type { ConversationEntry } from "../story/conversation-history.js";
 
 export class AiError extends Error {
   constructor(message: string, readonly status?: number, readonly code?: string) {
@@ -46,6 +47,7 @@ export function analyzeDrawing(
   joints: Array<{ id: string; x: number; y: number }>,
   worldSummary: string,
   acceptedCategories: string[],
+  history: ConversationEntry[] = [],
 ): Promise<DrawingAnalyzeResult> {
   return postJson<DrawingAnalyzeResult>("/api/drawing/analyze", {
     image,
@@ -56,6 +58,7 @@ export function analyzeDrawing(
     joints,
     worldSummary,
     acceptedCategories,
+    history,
   });
 }
 

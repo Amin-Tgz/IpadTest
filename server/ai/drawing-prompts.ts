@@ -74,6 +74,7 @@ export interface DrawingPromptContext {
   acceptedCategories: string[];
   joints: Array<{ id: string; x: number; y: number }>;
   worldSummary: string;
+  history: Array<{ role: "child" | "hero" | "system"; kind: "drawing" | "message" | "action"; text: string }>;
   width: number;
   height: number;
 }
@@ -86,6 +87,8 @@ export function drawingAnalysisPrompt(context: DrawingPromptContext): string {
     `Possible object categories (examples, not a restriction): ${context.acceptedCategories.join(", ")}`,
     `Character joints and semantic face/hand-part anchors (image pixels): ${context.joints.map((j) => `${j.id}@(${Math.round(j.x)},${Math.round(j.y)})`).join(" ")}`,
     `World summary: ${context.worldSummary}`,
+    `Conversation and completed-action history, oldest first: ${context.history.length === 0 ? "none yet" : context.history.map((entry) => `[${entry.role}/${entry.kind}] ${entry.text}`).join(" | ")}`,
+    "Use history to resolve follow-up requests such as «بیا اینجا», «از روش رد شو», or pronouns. Completed system actions are facts; do not claim they are still pending.",
     "Look ONLY at the NEWLY added strokes (usually the most recently drawn ink, often near the feet or hands).",
     "This is open-ended free play. Understand whatever the user added: objects, clothing, tools, creatures, symbols, or handwritten Persian/English text.",
     "If the user wrote a question, mappedAction=answer_question and the reaction must answer it briefly in Persian.",
@@ -104,7 +107,8 @@ export function drawingAnalysisPrompt(context: DrawingPromptContext): string {
     "The fixed hero is grumpy but lovable: it protests briefly, then becomes curious or delighted when the child helps.",
     "reaction.emotion must be exactly one of curious, protesting, confused, effort, delighted, sad.",
     'reaction.bubble: the semantic reaction in Persian (فارسی), playful and under 70 characters.',
-    'reaction.spoken: one understandable Iranian-Persian sentence under 100 characters. It may begin with exactly one natural interjection such as «اِ؟»، «هوم...»، «اوه!» or «آها!».',
+    'reaction.spoken: one understandable Iranian-Persian sentence under 100 characters. Do not habitually start with an interjection and avoid «آها/اهان» unless a rare delighted moment truly needs it.',
+    "Vary the delivery: the hero may sound mildly annoyed or mock-grumpy sometimes. Use «رفیق»، «مشتی»، or «چه خفن» occasionally and naturally—never more than one of them in a response and never in every turn.",
     "Return ONLY JSON.",
   ].join("\n");
 }

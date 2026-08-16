@@ -1,4 +1,4 @@
-const CACHE = "pencil-ai-v2";
+const CACHE = "line-pal-v3";
 const ASSETS = ["/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {

@@ -19,7 +19,14 @@ const bodySchema = z.object({
   joints: z.array(z.object({ id: z.string().max(40), x: z.number(), y: z.number() })).max(32),
   worldSummary: z.string().max(400),
   acceptedCategories: z.array(z.string().max(40)).max(12),
-});
+  history: z.array(z.object({
+    id: z.string().max(80),
+    role: z.enum(["child", "hero", "system"]),
+    kind: z.enum(["drawing", "message", "action"]),
+    text: z.string().min(1).max(180),
+    createdAt: z.number().finite(),
+  }).strict()).max(40).default([]),
+}).strict();
 
 function checkImage(image: string): void {
   const match = /^data:(image\/[a-z+]+);base64,(.+)$/.exec(image);
@@ -47,6 +54,7 @@ export function analyzeDrawingRoute(provider: AIProvider, config: ServerConfig) 
         acceptedCategories: body.acceptedCategories,
         joints: body.joints,
         worldSummary: body.worldSummary,
+        history: body.history,
         width: body.canvas.width,
         height: body.canvas.height,
       };
@@ -118,7 +126,7 @@ export function analyzeDrawingRoute(provider: AIProvider, config: ServerConfig) 
       });
     } catch (error) {
       const status = error instanceof z.ZodError ? 400 : 422;
-      console.error("[pencil-ai] drawing_analysis_failed", {
+      console.error("[line-pal] drawing_analysis_failed", {
         status,
         message: error instanceof Error ? error.message : "unknown error",
       });

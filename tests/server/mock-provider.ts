@@ -4,8 +4,10 @@ import type { AIProvider, ProviderRequest, ProviderResult } from "../../server/a
 export class MockProvider implements AIProvider {
   readonly model = "mock-model";
   responses: Array<ProviderResult | Error> = [];
+  requests: ProviderRequest[] = [];
 
-  async complete(_request: ProviderRequest): Promise<ProviderResult> {
+  async complete(request: ProviderRequest): Promise<ProviderResult> {
+    this.requests.push(request);
     const next = this.responses.shift();
     if (next instanceof Error) throw next;
     if (!next) return { text: "" };

@@ -1,3 +1,5 @@
+// Retain the prototype database name so the Line Pal rebrand does not discard
+// existing local stories or their conversation history.
 const DB_NAME = "pencil-ai";
 const DB_VERSION = 1;
 const STORE = "sessions";
