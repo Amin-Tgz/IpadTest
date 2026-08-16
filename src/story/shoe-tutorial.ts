@@ -5,6 +5,10 @@ export type ShoeSlot = "left_foot" | "right_foot";
 export interface ShoeCandidate {
   slot: ShoeSlot;
   object: DrawingObject;
+  /** Index of the analysis object this candidate came from. */
+  sourceIndex: number;
+  /** True when one detected pair was divided between the two feet. */
+  split: boolean;
 }
 
 export class ShoeTutorialProgress {
@@ -43,13 +47,16 @@ export function normalizeShoeCandidates(
   feet: Record<ShoeSlot, Vec2>,
   occupied: Readonly<Partial<Record<ShoeSlot, string>>>,
 ): ShoeCandidate[] {
-  const unique = objects.filter(isShoe).filter((object, index, all) =>
-    all.findIndex((candidate) => overlapRatio(candidate.boundingBox, object.boundingBox) >= 0.58) === index,
+  const shoes = objects
+    .map((object, sourceIndex) => ({ object, sourceIndex }))
+    .filter((entry) => isShoe(entry.object));
+  const unique = shoes.filter((entry, index, all) =>
+    all.findIndex((candidate) => overlapRatio(candidate.object.boundingBox, entry.object.boundingBox) >= 0.58) === index,
   );
   const available = new Set<ShoeSlot>((["left_foot", "right_foot"] as const).filter((slot) => !occupied[slot]));
   const result: ShoeCandidate[] = [];
 
-  for (const object of unique) {
+  for (const { object, sourceIndex } of unique) {
     if (available.size === 0) break;
     if (available.size === 2 && spansBothFeet(object, feet)) {
       const splitX = (feet.left_foot.x + feet.right_foot.x) / 2;
@@ -61,6 +68,8 @@ export function normalizeShoeCandidates(
         const width = leftSide ? splitX - minX : maxX - splitX;
         result.push({
           slot,
+          sourceIndex,
+          split: true,
           object: {
             ...object,
             boundingBox: { ...object.boundingBox, x, width: Math.max(8, width) },
@@ -78,7 +87,7 @@ export function normalizeShoeCandidates(
       ? preferred
       : [...available].sort((a, b) => distanceToBox(feet[a], object) - distanceToBox(feet[b], object))[0];
     if (!slot) continue;
-    result.push({ slot, object: { ...object, attachTo: slot, anchor: { ...feet[slot] } } });
+    result.push({ slot, sourceIndex, split: false, object: { ...object, attachTo: slot, anchor: { ...feet[slot] } } });
     available.delete(slot);
   }
   return result;

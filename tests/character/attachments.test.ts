@@ -105,6 +105,63 @@ describe("buildAttachmentFromObject", () => {
     expect(store.byId("shoe_1")?.entityId).toBe(attachment.id);
   });
 
+  it("uses the caller's stroke set when the AI box missed the ink entirely", () => {
+    const store = new StrokeStore();
+    store.add({
+      id: "shoe_right",
+      points: [{ x: 300, y: 100, pressure: 0.5, time: 0 }, { x: 360, y: 130, pressure: 0.5, time: 1 }],
+      color: "#F7F5EE", baseWidth: 4, tool: "pen", createdAt: 0, worldSpace: true, entityId: null, active: true, groupId: null,
+    });
+    const rt = new RigRuntime(buildRig(manifest, store), () => 0);
+    const idMap = { sampleStrokesInRegion: () => new Set<string>() } as unknown as IdMap;
+    const attachment = buildAttachmentFromObject(
+      { type: "shoe", category: "wearable", boundingBox: { x: 700, y: 700, width: 40, height: 20 }, attachTo: "right_foot", anchor: { x: 720, y: 710 } },
+      store, idMap, rt, 0, new Set(["shoe_right"]), 10, new Set(["shoe_right"]),
+    )!;
+    expect(attachment.sourceStrokeIds).toEqual(["shoe_right"]);
+  });
+
+  it("anchors a shoe on the ink the child drew, not on a misplaced box", () => {
+    const store = new StrokeStore();
+    store.add({
+      id: "shoe_left",
+      points: [{ x: 60, y: 300, pressure: 0.5, time: 0 }, { x: 140, y: 340, pressure: 0.5, time: 1 }],
+      color: "#F7F5EE", baseWidth: 4, tool: "pen", createdAt: 0, worldSpace: true, entityId: null, active: true, groupId: null,
+    });
+    const rt = new RigRuntime(buildRig(manifest, store), () => 0);
+    const idMap = { sampleStrokesInRegion: () => new Set(["shoe_left"]) } as unknown as IdMap;
+    const attachment = buildAttachmentFromObject(
+      { type: "shoe", category: "wearable", boundingBox: { x: 60, y: 900, width: 80, height: 40 }, attachTo: "left_foot", anchor: { x: 100, y: 920 } },
+      store, idMap, rt, 0, new Set(["shoe_left"]),
+    )!;
+    // Ink spans x 60..140 and y 300..340, so the anchor is its centre-x and 35%
+    // down its height — independent of the box the provider reported.
+    expect(attachment.strokes[0].localPoints).toEqual([
+      { x: -40, y: -14 },
+      { x: 40, y: 26 },
+    ]);
+  });
+
+  it("never lets one object's attachment swallow a second drawing", () => {
+    const store = new StrokeStore();
+    for (const [id, x] of [["shoe_a", 60], ["shoe_b", 300]] as const) {
+      store.add({
+        id,
+        points: [{ x, y: 300, pressure: 0.5, time: 0 }, { x: x + 60, y: 330, pressure: 0.5, time: 1 }],
+        color: "#F7F5EE", baseWidth: 4, tool: "pen", createdAt: 0, worldSpace: true, entityId: null, active: true, groupId: null,
+      });
+    }
+    const rt = new RigRuntime(buildRig(manifest, store), () => 0);
+    // The region sampler bleeding a neighbouring drawing into the box must not
+    // hand both shoes to a single foot.
+    const idMap = { sampleStrokesInRegion: () => new Set(["shoe_a", "shoe_b"]) } as unknown as IdMap;
+    const attachment = buildAttachmentFromObject(
+      { type: "shoe", category: "wearable", boundingBox: { x: 55, y: 295, width: 70, height: 40 }, attachTo: "left_foot", anchor: { x: 90, y: 315 } },
+      store, idMap, rt, 0, new Set(["shoe_a", "shoe_b"]), 10, new Set(["shoe_a"]),
+    )!;
+    expect(attachment.sourceStrokeIds).toEqual(["shoe_a"]);
+  });
+
   it("keeps an entire selected stroke even when the AI box covers only part of it", () => {
     const store = new StrokeStore();
     store.add({

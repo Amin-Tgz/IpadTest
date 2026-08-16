@@ -58,6 +58,7 @@ export function buildAttachmentFromObject(
   index: number,
   allowedStrokeIds?: ReadonlySet<string>,
   regionPadding = 30,
+  resolvedStrokeIds?: ReadonlySet<string>,
 ): Attachment | null {
   if (!object.attachTo || !object.anchor) return null;
   const boneId = resolveBoneId(object.attachTo, object.anchor, runtime);
@@ -69,23 +70,28 @@ export function buildAttachmentFromObject(
     width: object.boundingBox.width + regionPadding * 2,
     height: object.boundingBox.height + regionPadding * 2,
   };
-  const strokeIds = idMap.sampleStrokesInRegion(store, box, 4);
-  const attachmentStrokes: AttachmentStroke[] = [];
-  for (const stroke of store.all()) {
-    if (!stroke.active || !strokeIds.has(stroke.id) || (allowedStrokeIds && !allowedStrokeIds.has(stroke.id))) continue;
-    // The detection box chooses which strokes belong to the object, but it must
-    // not crop those strokes. A balloon string, handle, or hat brim can extend
-    // well outside an imperfect AI box and should still move as one drawing.
-    const points = stroke.points.map((p) => ({ x: p.x, y: p.y }));
-    if (points.length === 0) continue;
-    attachmentStrokes.push({
-      sourceStrokeId: stroke.id,
-      localPoints: toLocalPoints(samplePoints(points), attachmentSourceAnchor(object, boneId)),
-      color: stroke.color,
-      baseWidth: stroke.baseWidth,
-    });
-  }
-  if (attachmentStrokes.length === 0) return null;
+  // A provider box both misses the ink it describes and bleeds neighbouring
+  // drawings in. When the caller has already decided which strokes this object
+  // owns, that answer is authoritative; sampling the box is only the fallback.
+  const strokeIds = resolvedStrokeIds && resolvedStrokeIds.size > 0
+    ? resolvedStrokeIds
+    : idMap.sampleStrokesInRegion(store, box, 4);
+  // The detection box chooses which strokes belong to the object, but it must
+  // not crop those strokes. A balloon string, handle, or hat brim can extend
+  // well outside an imperfect AI box and should still move as one drawing.
+  const claimed = store.all().filter((stroke) =>
+    stroke.active && strokeIds.has(stroke.id) && stroke.points.length > 0 &&
+    (!allowedStrokeIds || allowedStrokeIds.has(stroke.id)),
+  );
+  if (claimed.length === 0) return null;
+
+  const anchor = attachmentSourceAnchor(object, boneId, inkBounds(claimed));
+  const attachmentStrokes: AttachmentStroke[] = claimed.map((stroke) => ({
+    sourceStrokeId: stroke.id,
+    localPoints: toLocalPoints(samplePoints(stroke.points.map((p) => ({ x: p.x, y: p.y }))), anchor),
+    color: stroke.color,
+    baseWidth: stroke.baseWidth,
+  }));
 
   const id = `attachment_${Date.now().toString(36)}_${index}`;
   attachmentStrokes.forEach((stroke) => store.setEntityId(stroke.sourceStrokeId, id));
@@ -108,14 +114,32 @@ function samplePoints(points: Array<{ x: number; y: number }>): Array<{ x: numbe
   return points.filter((_, index) => index % step === 0);
 }
 
+export function inkBounds(
+  strokes: Array<{ points: Array<{ x: number; y: number }> }>,
+): { x: number; y: number; width: number; height: number } {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const stroke of strokes) {
+    for (const point of stroke.points) {
+      if (point.x < minX) minX = point.x;
+      if (point.y < minY) minY = point.y;
+      if (point.x > maxX) maxX = point.x;
+      if (point.y > maxY) maxY = point.y;
+    }
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+// A shoe must sit on the foot no matter where the provider drew its box, so the
+// foot anchor comes from the child's actual ink rather than the reported box.
 function attachmentSourceAnchor(
   object: DetectedObject,
   boneId: JointId,
+  ink: { x: number; y: number; width: number; height: number },
 ): { x: number; y: number } {
   if (object.category !== "wearable" || !boneId.endsWith("foot")) return object.anchor!;
   return {
-    x: object.boundingBox.x + object.boundingBox.width / 2,
-    y: object.boundingBox.y + object.boundingBox.height * 0.35,
+    x: ink.x + ink.width / 2,
+    y: ink.y + ink.height * 0.35,
   };
 }
 

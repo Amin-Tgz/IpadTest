@@ -41,6 +41,7 @@ import { validateActionRequest } from "../ai/action-protocol.js";
 import { installLivingLineHero, LIVING_LINE_HERO_ID, type HeroVoicePreset } from "../character/living-line-hero.js";
 import { QUESTS, type QuestState } from "../story/quest-engine.js";
 import { normalizeShoeCandidates, ShoeTutorialProgress } from "../story/shoe-tutorial.js";
+import { resolveObjectStrokes } from "../world/object-strokes.js";
 import {
   createLadderRescuePlan,
   MovableWorldObject,
@@ -574,7 +575,6 @@ async function resolveDrawingAttempt(): Promise<void> {
       pendingSourceStrokeIds = new Set(reviewSourceStrokeIds);
       lastFullMapping = full.mapping;
       const registered = registerWorldObjects(analysis, full.mapping, reviewSourceStrokeIds);
-      clearTemporaryReviewInk(reviewSourceStrokeIds, registered.retainedStrokeIds);
       const bubbleText = looksPersian(analysis.reaction.bubble)
         ? analysis.reaction.bubble
         : "دیدمش! بذار ببینم باهاش چی کار می‌شه کرد…";
@@ -586,7 +586,7 @@ async function resolveDrawingAttempt(): Promise<void> {
           beginAwaitingRescue(false);
         }
       } else if (goalId === "draw_shoes") {
-        const addedShoes = equipTutorialShoes(analysis, full.mapping);
+        const addedShoes = equipTutorialShoes(analysis, full.mapping, registered.strokeIdsByObject);
         if (shoeProgress.complete) {
           const successBubble = "چه خفن! حالا هر دو پام کفش دارن؛ بریم!";
           quest.trigger({
@@ -616,10 +616,13 @@ async function resolveDrawingAttempt(): Promise<void> {
         quest.trigger({ type: "drawing_invalid", message: bubbleText });
         beginAwaitingDrawing(goalId, false);
       } else {
-        equipDetectedObjects(analysis, full.mapping);
+        equipDetectedObjects(analysis, full.mapping, registered.strokeIdsByObject);
         walkToDrawingReaction(analysis, registered.entityIds, bubbleText, spokenText);
         beginAwaitingDrawing("free_draw", true);
       }
+      // Ownership must be settled before unrecognized ink is swept away:
+      // strokes an attachment claimed carry an entityId only after equipping.
+      clearTemporaryReviewInk(reviewSourceStrokeIds, registered.retainedStrokeIds);
       groundChangePending = false;
       diagnostics.info("drawing_analysis_succeeded", { goalId, objects: analysis.objects.length, action: analysis.mappedAction });
     } else {
@@ -810,29 +813,27 @@ function registerWorldObjects(
   analysis: DrawingAnalysis,
   mapping: CaptureMapping,
   sourceStrokeIds: ReadonlySet<string>,
-): { entityIds: string[]; retainedStrokeIds: Set<string> } {
-  const retainedStrokeIds = new Set<string>();
+): { entityIds: string[]; retainedStrokeIds: Set<string>; strokeIdsByObject: string[][] } {
+  const boundsByObject = analysis.objects.map((object) => ({
+    x: imageToWorldX(object.boundingBox.x, mapping),
+    y: imageToWorldY(object.boundingBox.y, mapping),
+    width: object.boundingBox.width / mapping.scale,
+    height: object.boundingBox.height / mapping.scale,
+  }));
+  const reviewedStrokes = store.all()
+    .filter((stroke) => sourceStrokeIds.has(stroke.id) && stroke.active)
+    .map((stroke) => ({ id: stroke.id, points: stroke.points }));
+  const { perObject, unmatched } = resolveObjectStrokes(reviewedStrokes, boundsByObject);
+
+  const retainedStrokeIds = new Set<string>(perObject.flat());
   const entityIds = analysis.objects.map((object, index) => {
     const id = `world_${Date.now().toString(36)}_${index}`;
-    const bounds = {
-      x: imageToWorldX(object.boundingBox.x, mapping),
-      y: imageToWorldY(object.boundingBox.y, mapping),
-      width: object.boundingBox.width / mapping.scale,
-      height: object.boundingBox.height / mapping.scale,
-    };
+    const bounds = boundsByObject[index];
     const physicsShape = inferredPhysicsShape(object);
-    const objectStrokeIds = store.all()
-      .filter((stroke) => sourceStrokeIds.has(stroke.id) && stroke.active && stroke.points.some((point) =>
-        point.x >= bounds.x - 12 && point.x <= bounds.x + bounds.width + 12 &&
-        point.y >= bounds.y - 12 && point.y <= bounds.y + bounds.height + 12,
-      ))
-      .map((stroke) => stroke.id);
-    const remainsInWorld = true;
-    if (remainsInWorld) objectStrokeIds.forEach((id) => retainedStrokeIds.add(id));
     worldEntities.upsert({
       id,
       type: object.type,
-      sourceStrokeIds: objectStrokeIds,
+      sourceStrokeIds: perObject[index],
       bounds,
       affordances: object.affordances,
       physicsShape,
@@ -847,7 +848,12 @@ function registerWorldObjects(
     }
     return id;
   });
-  return { entityIds, retainedStrokeIds };
+  diagnostics.info("world_objects_registered", {
+    objects: analysis.objects.length,
+    matchedStrokes: retainedStrokeIds.size,
+    instructionStrokes: unmatched.length,
+  });
+  return { entityIds, retainedStrokeIds, strokeIdsByObject: perObject };
 }
 
 function clearTemporaryReviewInk(sourceStrokeIds: ReadonlySet<string>, retainedStrokeIds: ReadonlySet<string>): void {
@@ -944,7 +950,11 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
   }
 }
 
-function equipDetectedObjects(analysis: DrawingAnalysis, mapping: CaptureMapping): void {
+function equipDetectedObjects(
+  analysis: DrawingAnalysis,
+  mapping: CaptureMapping,
+  strokeIdsByObject: string[][] = [],
+): void {
   if (!rigRuntime) return;
   const added: Attachment[] = [];
   analysis.objects.forEach((object, index) => {
@@ -961,7 +971,10 @@ function equipDetectedObjects(analysis: DrawingAnalysis, mapping: CaptureMapping
         height: object.boundingBox.height / mapping.scale,
       },
     };
-    const attachment = buildAttachmentFromObject(objectWithWorld, store, idMap, rigRuntime!, index, pendingSourceStrokeIds);
+    const attachment = buildAttachmentFromObject(
+      objectWithWorld, store, idMap, rigRuntime!, index, pendingSourceStrokeIds, 30,
+      new Set(strokeIdsByObject[index] ?? []),
+    );
     if (attachment) added.push(attachment);
   });
   if (added.length > 0) {
@@ -971,7 +984,11 @@ function equipDetectedObjects(analysis: DrawingAnalysis, mapping: CaptureMapping
   }
 }
 
-function equipTutorialShoes(analysis: DrawingAnalysis, mapping: CaptureMapping): number {
+function equipTutorialShoes(
+  analysis: DrawingAnalysis,
+  mapping: CaptureMapping,
+  strokeIdsByObject: string[][] = [],
+): number {
   if (!rigRuntime) return 0;
   const leftWorld = rigRuntime.jointWorld("left_foot");
   const rightWorld = rigRuntime.jointWorld("right_foot");
@@ -999,7 +1016,22 @@ function equipTutorialShoes(analysis: DrawingAnalysis, mapping: CaptureMapping):
         height: object.boundingBox.height / mapping.scale,
       },
     };
-    const attachment = buildAttachmentFromObject(objectWithWorld, store, idMap, rigRuntime!, index, allowed, 10);
+    // A split pair shares one source object, so its halves must still be
+    // separated by the region sampler rather than by the shared stroke set.
+    const resolved = candidate.split
+      ? undefined
+      : new Set((strokeIdsByObject[candidate.sourceIndex] ?? []).filter((id) => allowed.has(id)));
+    const attachment = buildAttachmentFromObject(
+      objectWithWorld, store, idMap, rigRuntime!, index, allowed, 10, resolved,
+    );
+    diagnostics.info("shoe_candidate_resolved", {
+      slot: candidate.slot,
+      sourceIndex: candidate.sourceIndex,
+      split: candidate.split,
+      allowed: [...allowed],
+      resolved: resolved ? [...resolved] : null,
+      claimed: attachment?.sourceStrokeIds ?? null,
+    });
     if (!attachment || !shoeProgress.fill(candidate.slot, attachment.id)) return;
     attachment.sourceStrokeIds.forEach((id) => claimedStrokeIds.add(id));
     attachments.push(attachment);

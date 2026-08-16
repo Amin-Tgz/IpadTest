@@ -22,6 +22,22 @@ export interface PointerInputCallbacks {
   onEraserMove?: (point: { x: number; y: number }) => void;
 }
 
+interface CoalescingPointerEvent {
+  getCoalescedEvents?: () => unknown[];
+}
+
+/**
+ * Every sample a pointer move carries, newest last.
+ *
+ * Safari has shipped builds where `getCoalescedEvents()` answers with an empty
+ * list; taking that literally drops every point between pen-down and pen-up and
+ * silently loses the child's stroke. The event itself is always one real sample.
+ */
+export function pointerMoveSamples<T extends CoalescingPointerEvent>(event: T): T[] {
+  const coalesced = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
+  return Array.isArray(coalesced) && coalesced.length > 0 ? (coalesced as T[]) : [event];
+}
+
 export interface PointerInterceptor {
   down: (world: { x: number; y: number }, e: PointerEvent) => boolean;
   move: (world: { x: number; y: number }, e: PointerEvent) => boolean;
@@ -129,8 +145,7 @@ export class PointerInput {
       this.eraseAt(this.toWorld(e.clientX, e.clientY));
       return;
     }
-    const events = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [e];
-    for (const event of events) this.appendPointerPoint(event);
+    for (const event of pointerMoveSamples(e)) this.appendPointerPoint(event);
   };
 
   private appendPointerPoint(e: PointerEvent): void {

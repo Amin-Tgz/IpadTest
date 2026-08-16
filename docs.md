@@ -120,3 +120,16 @@ Living document. Each plan phase ends with: test result, commit hash, notes, ope
 - Web Audio retries local clip delivery, falls back to generated speech if a static clip cannot load or decode, rechecks suspended contexts, and uses a post-duration watchdog only for missed `onended` browser events.
 - The default actor is `Leda`. Performance direction allows occasional mock anger and sparse «رفیق»، «مشتی»، and «چه خفن», while explicitly discouraging repetitive «آها/اهان». Leda generation is always attempted first; because the provider connection timed out during the asset refresh, older local tutorial clips remain only as a last-resort anti-silence fallback until they can be regenerated.
 - The persistent top drawing hint, the free-play announcement, and the speech-bubble tail were removed.
+
+## Drawing-preservation and provider-resilience checkpoint
+
+Found by driving the running app in a browser against the real provider, not by the test suite (which was green throughout).
+
+- **The child's drawing could be silently deleted.** Reviewed strokes were retained only when a point fell inside the provider's bounding box (+12px). Provider boxes routinely land tens of pixels off, so a correct drawing was reclassified as instruction ink and deactivated — the artwork vanished while the hero spoke a delighted line about it. `src/world/object-strokes.ts` now owns stroke→object ownership: containment first, then a nearest-box match within a tolerance scaled to the object, and only genuinely distant ink counts as instruction ink.
+- **Ownership is settled before ink is swept.** `clearTemporaryReviewInk` ran before attachments existed, so strokes an attachment was about to claim had no `entityId` to protect them. It now runs after the equip branches.
+- **One object's attachment could swallow a neighbouring drawing.** The id-map region sampler bleeds nearby strokes into a padded box, which handed both shoes to a single foot and left the second slot unfillable. The caller's resolved stroke set is now authoritative; box sampling is only the fallback. Covered by `tests/character/attachments.test.ts`.
+- **Wearable anchors come from the child's ink**, not from the reported box, so a misplaced box no longer parks a shoe below the ground line.
+- **Provider connection errors are now retried.** The OpenAI SDK reports every DNS/TCP/TLS failure as the opaque `"Connection error."`, which the old regex missed, so a transient blip cost a whole story beat with zero retries. `isRetryableProviderError` now walks the cause chain and matches connection/socket/DNS codes and retryable statuses.
+- **A stale server on the dev port is no longer silent.** `EADDRINUSE` previously set `exitCode` and let the client keep running against whatever old build held the port — this cost real debugging time during this session. The server now exits with a loud banner and `npm run dev` uses `--kill-others-on-fail`.
+- **An empty `getCoalescedEvents()` no longer discards a stroke.** Safari has shipped builds that answer with an empty list; every point between pen-down and pen-up was dropped. `pointerMoveSamples` falls back to the event itself.
+- Verification: strict typecheck passed, 41 test files / 216 tests passed, production build passed, and a live run with the real provider equipped both shoes from two separate drawings with `removedCount: 0`.

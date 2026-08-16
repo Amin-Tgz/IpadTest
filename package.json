@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Line Pal — an original living-line drawing adventure for iPad.",
   "scripts": {
-    "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev": "concurrently --kill-others-on-fail -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "dev:client": "vite",
     "dev:server": "tsx watch server/app.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.tests.json --noEmit && tsc -p tsconfig.client.json --noEmit",

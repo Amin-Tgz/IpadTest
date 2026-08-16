@@ -86,9 +86,17 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   });
   server.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EADDRINUSE") {
-      console.error(`[line-pal] port ${config.PORT} is already in use. Stop the existing Line Pal server or change PORT in .env.`);
-      process.exitCode = 1;
-      return;
+      // Continuing here is worse than stopping: the client keeps working while
+      // every /api call silently reaches whatever stale server holds the port.
+      console.error(
+        `\n[line-pal] ==========================================================\n` +
+        `[line-pal] PORT ${config.PORT} IS ALREADY IN USE — this server did not start.\n` +
+        `[line-pal] Another Line Pal server is holding it, and the client would\n` +
+        `[line-pal] talk to that stale build instead of this one.\n` +
+        `[line-pal] Stop it first, or change PORT in .env.\n` +
+        `[line-pal] ==========================================================\n`,
+      );
+      process.exit(1);
     }
     throw error;
   });
