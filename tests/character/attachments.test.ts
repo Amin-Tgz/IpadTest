@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveBoneId, toLocalPoints, buildAttachmentFromObject, type DetectedObject } from "../../src/character/attachments.js";
+import { resolveBoneId, toLocalPoints, buildAttachmentFromObject, wearableFitScale, type DetectedObject } from "../../src/character/attachments.js";
 import { buildRig } from "../../src/character/rig-builder.js";
 import { RigRuntime } from "../../src/character/rig-runtime.js";
 import { StrokeStore } from "../../src/drawing/stroke-store.js";
@@ -77,6 +77,33 @@ describe("toLocalPoints", () => {
   });
 });
 
+describe("wearableFitScale", () => {
+  it("leaves a drawing that already suits the hero untouched", () => {
+    expect(wearableFitScale(50, 20, 180)).toBe(1);
+  });
+
+  it("never enlarges a small drawing", () => {
+    expect(wearableFitScale(10, 6, 180)).toBe(1);
+  });
+
+  it("shrinks a shoe drawn far larger than the hero", () => {
+    // 126px of ink on a 176px hero swallows the legs; 0.38 of hero height is
+    // still a generous cartoon shoe.
+    const scale = wearableFitScale(126, 49, 176);
+    expect(scale).toBeCloseTo((176 * 0.38) / 126, 5);
+    expect(126 * scale).toBeCloseTo(66.88, 2);
+  });
+
+  it("keeps the child's drawing recognizable however big it was", () => {
+    expect(wearableFitScale(4000, 3000, 176)).toBe(0.35);
+  });
+
+  it("falls back to no scaling without a usable character height", () => {
+    expect(wearableFitScale(120, 40, 0)).toBe(1);
+    expect(wearableFitScale(0, 0, 180)).toBe(1);
+  });
+});
+
 describe("buildAttachmentFromObject", () => {
   it("returns null without attachTo or anchor", () => {
     const store = new StrokeStore();
@@ -134,12 +161,13 @@ describe("buildAttachmentFromObject", () => {
       { type: "shoe", category: "wearable", boundingBox: { x: 60, y: 900, width: 80, height: 40 }, attachTo: "left_foot", anchor: { x: 100, y: 920 } },
       store, idMap, rt, 0, new Set(["shoe_left"]),
     )!;
-    // Ink spans x 60..140 and y 300..340, so the anchor is its centre-x and 35%
-    // down its height — independent of the box the provider reported.
-    expect(attachment.strokes[0].localPoints).toEqual([
-      { x: -40, y: -14 },
-      { x: 40, y: 26 },
-    ]);
+    // Ink spans x 60..140 and y 300..340, so the anchor is its centre-x and the
+    // sole line — independent of the box the provider reported.
+    const [first, last] = attachment.strokes[0].localPoints;
+    expect(first.x).toBe(-40);
+    expect(last.x).toBe(40);
+    expect(first.y).toBeCloseTo(-32.8, 6);
+    expect(last.y).toBeCloseTo(7.2, 6);
   });
 
   it("never lets one object's attachment swallow a second drawing", () => {

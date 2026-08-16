@@ -50,6 +50,25 @@ export interface DetectedObject {
 
 const MAX_ATTACHMENT_POINTS = 500;
 
+// A child draws a shoe at pencil scale, not hero scale. Left alone it buries
+// the hero's legs and the two shoes overlap into one blob, so an oversized
+// wearable is shrunk toward its anchor — never enlarged, and never so far that
+// the child stops recognizing what they drew.
+const WEARABLE_HEIGHT_RATIO = 0.38;
+const MIN_WEARABLE_SCALE = 0.35;
+
+export function wearableFitScale(
+  inkWidth: number,
+  inkHeight: number,
+  characterHeight: number,
+): number {
+  const longest = Math.max(inkWidth, inkHeight);
+  if (longest <= 0 || characterHeight <= 0) return 1;
+  const allowed = characterHeight * WEARABLE_HEIGHT_RATIO;
+  if (longest <= allowed) return 1;
+  return Math.max(MIN_WEARABLE_SCALE, allowed / longest);
+}
+
 export function buildAttachmentFromObject(
   object: DetectedObject,
   store: StrokeStore,
@@ -85,13 +104,17 @@ export function buildAttachmentFromObject(
   );
   if (claimed.length === 0) return null;
 
-  const anchor = attachmentSourceAnchor(object, boneId, inkBounds(claimed));
+  const ink = inkBounds(claimed);
+  const anchor = attachmentSourceAnchor(object, boneId, ink);
   const attachmentStrokes: AttachmentStroke[] = claimed.map((stroke) => ({
     sourceStrokeId: stroke.id,
     localPoints: toLocalPoints(samplePoints(stroke.points.map((p) => ({ x: p.x, y: p.y }))), anchor),
     color: stroke.color,
     baseWidth: stroke.baseWidth,
   }));
+  const fit = object.category === "wearable"
+    ? wearableFitScale(ink.width, ink.height, restCharacterHeight(runtime))
+    : 1;
 
   const id = `attachment_${Date.now().toString(36)}_${index}`;
   attachmentStrokes.forEach((stroke) => store.setEntityId(stroke.sourceStrokeId, id));
@@ -102,7 +125,7 @@ export function buildAttachmentFromObject(
     boneId,
     sourceStrokeIds: attachmentStrokes.map((stroke) => stroke.sourceStrokeId),
     strokes: attachmentStrokes,
-    localTransform: { ...IDENTITY_ENTITY_TRANSFORM },
+    localTransform: { ...IDENTITY_ENTITY_TRANSFORM, scaleX: fit, scaleY: fit },
     visible: true,
     drawOrder: 7,
   };
@@ -112,6 +135,16 @@ function samplePoints(points: Array<{ x: number; y: number }>): Array<{ x: numbe
   if (points.length <= MAX_ATTACHMENT_POINTS) return points;
   const step = Math.ceil(points.length / MAX_ATTACHMENT_POINTS);
   return points.filter((_, index) => index % step === 0);
+}
+
+function restCharacterHeight(runtime: RigRuntime): number {
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const joint of runtime.joints) {
+    if (joint.restY < minY) minY = joint.restY;
+    if (joint.restY > maxY) maxY = joint.restY;
+  }
+  return Number.isFinite(minY) && Number.isFinite(maxY) ? maxY - minY : 0;
 }
 
 export function inkBounds(
@@ -131,6 +164,10 @@ export function inkBounds(
 
 // A shoe must sit on the foot no matter where the provider drew its box, so the
 // foot anchor comes from the child's actual ink rather than the reported box.
+// The foot joint rests on the ground line, so the sole — not the middle of the
+// shoe — is what belongs there; anchoring higher buries the shoe underground.
+const SHOE_SOLE_RATIO = 0.82;
+
 function attachmentSourceAnchor(
   object: DetectedObject,
   boneId: JointId,
@@ -139,7 +176,7 @@ function attachmentSourceAnchor(
   if (object.category !== "wearable" || !boneId.endsWith("foot")) return object.anchor!;
   return {
     x: ink.x + ink.width / 2,
-    y: ink.y + ink.height * 0.35,
+    y: ink.y + ink.height * SHOE_SOLE_RATIO,
   };
 }
 

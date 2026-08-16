@@ -133,3 +133,9 @@ Found by driving the running app in a browser against the real provider, not by 
 - **A stale server on the dev port is no longer silent.** `EADDRINUSE` previously set `exitCode` and let the client keep running against whatever old build held the port — this cost real debugging time during this session. The server now exits with a loud banner and `npm run dev` uses `--kill-others-on-fail`.
 - **An empty `getCoalescedEvents()` no longer discards a stroke.** Safari has shipped builds that answer with an empty list; every point between pen-down and pen-up was dropped. `pointerMoveSamples` falls back to the event itself.
 - Verification: strict typecheck passed, 41 test files / 216 tests passed, production build passed, and a live run with the real provider equipped both shoes from two separate drawings with `removedCount: 0`.
+
+## Wearable fit checkpoint
+
+- **A wearable is fitted to the hero instead of burying it.** A child draws a shoe at pencil scale — roughly five times the hero's foot — so two equipped shoes overlapped into one blob that hid the legs. `wearableFitScale` shrinks an oversized wearable toward its anchor through the existing `localTransform`, never enlarges, and never drops below 0.35 so the child still recognizes their own drawing. The raw stroke points are untouched.
+- **A shoe's sole sits on the ground line.** The foot joint rests exactly on the baseline, so anchoring a shoe 35% down its height buried two thirds of it underground. The anchor is now the sole line (`SHOE_SOLE_RATIO`).
+- Verification: strict typecheck passed, 41 test files / 221 tests passed, production build passed, and a live provider run placed one correctly sized shoe on each foot with the hero's legs still visible.
