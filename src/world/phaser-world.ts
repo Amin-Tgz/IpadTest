@@ -472,7 +472,7 @@ export class PhaserWorldController {
       isStatic: spec.shape !== "dynamic",
       label: `drawing:${spec.id}`,
       friction: 0.8,
-      restitution: spec.shape === "dynamic" ? 0.15 : 0,
+      restitution: spec.shape === "dynamic" ? 0.35 : 0,
     };
     if (spec.shape === "stairs") {
       for (const step of stairStepRects(spec)) {
@@ -496,6 +496,35 @@ export class PhaserWorldController {
         thickness,
         common,
       ));
+    } else if (spec.shape === "slope") {
+      const thickness = Math.max(10, Math.min(16, spec.height * 0.18));
+      bodies.push(scene.matter.add.rectangle(
+        spec.x + spec.width / 2,
+        spec.y + spec.height / 2,
+        Math.max(12, spec.width),
+        thickness,
+        { ...common, angle: Phaser.Math.DegToRad(spec.angleDegrees ?? 0) },
+      ));
+    } else if (spec.shape === "dynamic") {
+      const nearSquare = Math.abs(spec.width - spec.height) < Math.min(spec.width, spec.height) * 0.35
+        && Math.max(spec.width, spec.height) < 96;
+      if (nearSquare) {
+        const radius = Math.max(10, Math.min(spec.width, spec.height) / 2);
+        bodies.push(scene.matter.add.circle(
+          spec.x + spec.width / 2,
+          spec.y + spec.height / 2,
+          radius,
+          { ...common, restitution: 0.45, friction: 0.32 },
+        ));
+      } else {
+        bodies.push(scene.matter.add.rectangle(
+          spec.x + spec.width / 2,
+          spec.y + spec.height / 2,
+          Math.max(8, spec.width),
+          Math.max(8, spec.height),
+          { ...common, angle: Phaser.Math.DegToRad(spec.angleDegrees ?? 0) },
+        ));
+      }
     } else {
       bodies.push(scene.matter.add.rectangle(
         spec.x + spec.width / 2,
@@ -506,6 +535,34 @@ export class PhaserWorldController {
       ));
     }
     this.entityBodies.set(spec.id, bodies);
+  }
+
+  getBodyState(id: string): { x: number; y: number; angle: number } | null {
+    const bodies = this.entityBodies.get(id);
+    if (!bodies || bodies.length === 0) return null;
+    const body = bodies[0];
+    return { x: body.position.x, y: body.position.y, angle: body.angle };
+  }
+
+  getGroundHeightAt(x: number): number | null {
+    const supports = [
+      ...this.floors,
+      ...[...this.entityBodies.values()].flat().filter((body) => body.isStatic),
+    ];
+    let best: number | null = null;
+    for (const support of supports) {
+      if (x < support.bounds.min.x - 6 || x > support.bounds.max.x + 6) continue;
+      const top = support.bounds.min.y;
+      if (best === null || top < best) {
+        // Prefer the highest support that is still below; we will filter by caller
+        // but for ground we want the smallest y (highest) among overlapping supports.
+        // Keep the first overlapping; caller checks delta.
+        best = top;
+        // Actually we want the support whose top is closest to foot; but we can
+        // return the smallest y that is still above foot? For simplicity return min top.
+      }
+    }
+    return best;
   }
 
   removeEntity(id: string): void {

@@ -1,7 +1,6 @@
 import type { MotionId } from "../animation/motion-clips.js";
 import type { HeroVoicePreset } from "../character/living-line-hero.js";
 import type { SpeechPlaybackRequest, SpeechPlaybackResult } from "./generated-speech.js";
-import { interjectionFor } from "./interjections.js";
 
 export interface StoryBeat {
   id: string;
@@ -22,8 +21,6 @@ export interface StoryBeatHooks {
   onSettled?(beat: StoryBeat, result: SpeechPlaybackResult): void;
   cancelSpeech(reason: string): void;
 }
-
-const INTERJECTION_GAP_MS = 140;
 
 export class StoryBeatCoordinator {
   private tail: Promise<void> = Promise.resolve();
@@ -73,20 +70,6 @@ export class StoryBeatCoordinator {
       fallbackAudioUrl: beat.fallbackAudioUrl,
       onPlaybackStart: startMotion,
     };
-    const instant = beat.audioUrl !== undefined || (this.hooks.isSpeechInstant?.(beat) ?? true);
-    const filler = instant ? null : interjectionFor(beat.emotion);
-    if (!filler) return this.hooks.playSpeech(request);
-
-    const fillerResult = await this.hooks.playSpeech({
-      text: filler.text,
-      preset: filler.preset,
-      audioUrl: filler.path,
-      onPlaybackStart: startMotion,
-    });
-    if (fillerResult.status === "cancelled") {
-      return { status: "cancelled", durationMs: fillerResult.durationMs, source: fillerResult.source };
-    }
-    if (fillerResult.status === "played") await wait(INTERJECTION_GAP_MS);
     return this.hooks.playSpeech(request);
   }
 }

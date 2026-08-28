@@ -7,7 +7,6 @@ import { Camera } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { SpeechBubble } from "../story/speech-bubble.js";
 import { GeneratedSpeech } from "../story/generated-speech.js";
-import { INTERJECTIONS } from "../story/interjections.js";
 import { StoryBeatCoordinator, type StoryBeat } from "../story/story-beat.js";
 import { SfxEngine } from "../audio/sfx-engine.js";
 import { buildSampleCharacter, buildSampleManifest } from "./sample-character.js";
@@ -871,6 +870,15 @@ function registerWorldObjects(
         ...bounds,
         angleDegrees: object.orientationDegrees,
       });
+      if (physicsShape === "dynamic" && perObject[index].length > 0) {
+        const source = perObject[index].map((sid) => store.byId(sid)).filter((s): s is Stroke => Boolean(s && s.active));
+        if (source.length > 0) {
+          const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+          const movable = new MovableWorldObject(id, source, center);
+          movableObjects.set(id, movable);
+          perObject[index].forEach((sid) => movableStrokeIds.add(sid));
+        }
+      }
     }
     return id;
   });
@@ -1631,7 +1639,15 @@ const pointer = new PointerInput(canvas, store, camera, {
   onErase: (affectedStrokes) => {
     diagnostics.info("strokes_erased", { affectedStrokes });
     const removedEntityIds = worldEntities.removeByStrokeIds(new Set(affectedStrokes));
-    removedEntityIds.forEach((id) => phaserWorld?.removeEntity(id));
+    removedEntityIds.forEach((id) => {
+      phaserWorld?.removeEntity(id);
+      const movable = movableObjects.get(id);
+      if (movable) {
+        movableObjects.delete(id);
+        movable.rawStrokes.flat().forEach(() => void 0);
+      }
+    });
+    affectedStrokes.forEach((id) => movableStrokeIds.delete(id));
     if (removedEntityIds.length > 0) diagnostics.info("world_entities_erased", { removedEntityIds });
     hideRevive();
     scheduleSave();
@@ -1876,6 +1892,21 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       renderer.drawStroke(ctx, stroke, camera);
     }
   }
+  for (const [id, movable] of movableObjects) {
+    if (id === rescueLadderId) continue;
+    const entity = worldEntities.get(id);
+    if (!entity || entity.physicsShape !== "dynamic") continue;
+    const state = phaserWorld?.getBodyState(id);
+    if (!state) continue;
+    movable.setTransform({
+      originX: movable.identity.originX,
+      originY: movable.identity.originY,
+      x: state.x,
+      y: state.y,
+      rotation: state.angle * 180 / Math.PI,
+      scale: 1,
+    });
+  }
   drawMovableObjects();
 
   if (rigRuntime) {
@@ -1940,6 +1971,23 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
           });
           finishDrawingReaction(pending.action, pending.entityIds, pending.emotion, pending.bubble, pending.spoken);
         }
+      }
+    }
+
+    if (rigRuntime && phaserWorld && (phaserWorld.isGrounded() || phaserWorld.motionState() === "landing")) {
+      const leftFoot = rigRuntime.jointWorld("left_foot");
+      const rightFoot = rigRuntime.jointWorld("right_foot");
+      let correction = 0;
+      for (const foot of [leftFoot, rightFoot]) {
+        if (!foot) continue;
+        const groundY = phaserWorld.getGroundHeightAt(foot.x);
+        if (groundY === null) continue;
+        const delta = groundY - foot.y;
+        if (delta > 0.5 && delta < 18) correction = Math.max(correction, delta);
+      }
+      if (correction > 0.5) {
+        const base = rigRuntime.entityTransform;
+        rigRuntime.setEntityTransform({ ...base, y: base.y + correction * 0.85 });
       }
     }
 
@@ -2090,9 +2138,6 @@ speech.preload(Object.values(QUESTS).flatMap((questDefinition) =>
     fallbackAudioUrl: line.fallbackAudioUrl,
   })),
 ));
-for (const interjection of Object.values(INTERJECTIONS)) {
-  void speech.prime({ text: interjection.text, preset: interjection.preset, audioUrl: interjection.path });
-}
 
 const startExperienceEl = document.createElement("button");
 startExperienceEl.textContent = "شروع";

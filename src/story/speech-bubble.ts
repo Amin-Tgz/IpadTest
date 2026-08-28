@@ -94,14 +94,13 @@ export class SpeechBubble {
 
     const viewport = { w: window.innerWidth, h: window.innerHeight };
     const above = anchorScreen.y - rect.height - 26;
-    const below = anchorScreen.y + 26;
-    const useAbove = above >= 8;
+    const top = Math.max(8, above);
 
     let left = anchorScreen.x - rect.width / 2;
     left = Math.max(10, Math.min(left, viewport.w - rect.width - 10));
 
     el.style.left = `${Math.round(left)}px`;
-    el.style.top = `${Math.round(useAbove ? above : below)}px`;
-    el.style.transformOrigin = useAbove ? "bottom center" : "top center";
+    el.style.top = `${Math.round(top)}px`;
+    el.style.transformOrigin = "bottom center";
   }
 }
