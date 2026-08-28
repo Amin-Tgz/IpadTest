@@ -150,6 +150,26 @@ function triggerSquash(sx: number, sy: number, durationMs: number, nowMs: number
   squashScaleY = sy;
   squashUntil = nowMs + durationMs;
 }
+
+type DustParticle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number };
+const dustParticles: DustParticle[] = [];
+function spawnDust(x: number, y: number, count = 6): void {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.PI + (Math.random() - 0.5) * 1.4;
+    const speed = 1.2 + Math.random() * 2.8;
+    dustParticles.push({
+      x,
+      y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - Math.random() * 1.5,
+      life: 1,
+      maxLife: 1,
+    });
+  }
+}
+
+let lastActivityAt = performance.now();
+const pencilTrail: Array<{ x: number; y: number; t: number }> = [];
 let pendingDrawingReaction: {
   action: AIActionRequest | null;
   entityIds: string[];
@@ -486,6 +506,7 @@ function speakStoryText(
   motion?: MotionId,
   fallbackAudioUrl?: string,
 ): void {
+  lastActivityAt = performance.now();
   conversation.append("hero", "message", `Bubble: ${bubbleText} Spoken: ${spokenText}`);
   scheduleSave();
   const id = `beat_${++storyBeatSequence}`;
@@ -789,7 +810,16 @@ function startLadderRescue(
   reviewSourceStrokeIds: ReadonlySet<string>,
 ): boolean {
   if (!rigRuntime || rescueState.phase !== "FALLEN_WAITING_RESCUE") return false;
-  const ladderIndex = analysis.objects.findIndex(isLadderObject);
+  let ladderIndex = analysis.objects.findIndex(isLadderObject);
+  if (ladderIndex < 0 && analysis.objects.length > 0) {
+    const fallback = analysis.objects.findIndex((object) => {
+      const semantic = `${object.type} ${object.affordances.join(" ")}`.toLowerCase();
+      return /ladder|stairs|platform|bridge|نردبان|پله|پل/.test(semantic) || object.physicsShape === "stairs" || object.physicsShape === "platform" || object.physicsShape === "slope";
+    });
+    if (fallback >= 0) ladderIndex = fallback;
+    else ladderIndex = 0;
+    diagnostics.info("ladder_rescue_fallback", { chosenIndex: ladderIndex, objects: analysis.objects.map((o) => o.type) });
+  }
   if (ladderIndex < 0) return false;
   const entityId = entityIds[ladderIndex];
   const entity = entityId ? worldEntities.get(entityId) : null;
@@ -1600,6 +1630,7 @@ repairDoneEl.addEventListener("click", () => {
 const pointer = new PointerInput(canvas, store, camera, {
   onStrokeStart: () => {
     pencilDown = true;
+    lastActivityAt = performance.now();
     hideRevive();
     hideReview();
     hideSampleDemo();
@@ -1619,6 +1650,9 @@ const pointer = new PointerInput(canvas, store, camera, {
   },
   onPencilMove: (e) => {
     const nowMs = performance.now();
+    pencilTrail.push({ x: e.x, y: e.y, t: nowMs });
+    if (pencilTrail.length > 12) pencilTrail.shift();
+    lastActivityAt = nowMs;
     if (pencilDown && nowMs - lastDrawSfxAt > 55) {
       const dx = lastPencil ? e.x - lastPencil.x : 0;
       const dy = lastPencil ? e.y - lastPencil.y : 0;
@@ -1864,6 +1898,31 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
     poly.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
     ctx.stroke();
   }
+  for (let i = dustParticles.length - 1; i >= 0; i--) {
+    const p = dustParticles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.18;
+    p.vx *= 0.98;
+    p.life -= 0.04;
+    if (p.life <= 0) dustParticles.splice(i, 1);
+  }
+  if (dustParticles.length > 0) {
+    ctx.save();
+    ctx.translate(-camera.state.x, -camera.state.y);
+    ctx.strokeStyle = PALETTE.primaryInk;
+    ctx.lineCap = "round";
+    for (const p of dustParticles) {
+      ctx.globalAlpha = Math.max(0, p.life) * 0.85;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + p.vx * 0.5, p.y + p.vy * 0.2 + 1);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
 
   updateLadderRescue(now);
 
@@ -1999,8 +2058,15 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
     const physicsMotion = phaserWorld?.motionState();
     const rootForRescue = rigRuntime.jointWorld("root");
     const baselineForRescue = h * BASE_LINE_Y_RATIO;
-    if ((rescueState.phase === "NONE" || rescueState.phase === "RECOVERED") && physicsMotion === "falling" && rootForRescue && rootForRescue.y > baselineForRescue + 72) {
-      enterFallenRescue();
+    if (
+      (rescueState.phase === "NONE" || rescueState.phase === "RECOVERED") &&
+      physicsMotion === "falling" &&
+      rootForRescue &&
+      rootForRescue.y > baselineForRescue + 72 &&
+      groundPath.erased
+    ) {
+      const edges = groundPath.nearestIntactEdges(rootForRescue.x);
+      if (edges.left !== null || edges.right !== null) enterFallenRescue();
     }
     if (physicsMotion === "falling" && animController.currentId !== "fall") {
       rigRuntime.expression = "surprised";
@@ -2010,7 +2076,28 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       animController.playById("idle");
       sfx.land(0.9);
       triggerSquash(1.08, 0.88, 120, now);
+      const foot = rigRuntime.jointWorld("left_foot") ?? rigRuntime.jointWorld("right_foot");
+      if (foot) spawnDust(foot.x, foot.y + 4, 7);
       if ("vibrate" in navigator) try { navigator.vibrate(12); } catch { void 0; }
+    }
+
+    if (
+      rigRuntime &&
+      !walking &&
+      !phaserWorld?.isNavigating &&
+      rescueState.phase !== "RESCUING" &&
+      (appState.get().mode === "awaiting" || appState.get().mode === "live") &&
+      !analysisInFlight &&
+      animController.currentId === "idle" &&
+      now - lastActivityAt > 6200
+    ) {
+      lastActivityAt = now + 4000 + Math.random() * 3000;
+      const fidgets: Array<MotionId> = ["confused", "happy", "scratch_head", "protest"];
+      const choice = fidgets[Math.floor(Math.random() * fidgets.length)];
+      animController.playById(choice);
+      if (choice === "scratch_head") rigRuntime.expression = "surprised";
+      else if (choice === "happy") rigRuntime.expression = "happy";
+      else rigRuntime.expression = "neutral";
     }
 
     const pose = animController.update(now);
@@ -2077,6 +2164,17 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
   const liveStroke = pointer.liveStroke;
   if (liveStroke) renderer.drawLiveStroke(ctx, liveStroke, camera);
 
+  if (pencilDown && pencilTrail.length > 2) {
+    const targetTime = now - 80;
+    let trail = pencilTrail[0];
+    for (const p of pencilTrail) if (Math.abs(p.t - targetTime) < Math.abs(trail.t - targetTime)) trail = p;
+    const spTrail = camera.worldToScreen({ x: trail.x, y: trail.y, pressure: 0.5, time: trail.t } as PencilEvent);
+    ctx.fillStyle = "rgba(216,246,255,0.14)";
+    ctx.beginPath();
+    ctx.arc(spTrail.x, spTrail.y, 10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   if (pencilDown && lastPencil) {
     const sp = camera.worldToScreen(lastPencil);
     const pulse = 0.1 + 0.04 * Math.sin(now / 120);
@@ -2119,6 +2217,9 @@ phaserWorld = new PhaserWorldController(
       if (event === "character_landed") {
         sfx.land(0.85);
         triggerSquash(1.08, 0.88, 120, performance.now());
+        const x = typeof detail.x === "number" ? detail.x : rigRuntime?.jointWorld("left_foot")?.x ?? 0;
+        const y = typeof detail.y === "number" ? detail.y : rigRuntime?.jointWorld("left_foot")?.y ?? 0;
+        spawnDust(x, y + 4, 6);
       }
       if (event === "navigation_recovery") {
         sfx.jump();

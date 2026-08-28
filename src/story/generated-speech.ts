@@ -98,7 +98,7 @@ export class GeneratedSpeech {
   }
 
   isInstant(request: SpeechPlaybackRequest): boolean {
-    if (request.audioUrl || request.fallbackAudioUrl) return true;
+    if (request.audioUrl) return true;
     const base = this.baseRequest(request);
     return this.decodedCache.has(this.cacheKey(base)) || this.audioCache.has(this.cacheKey(base));
   }
@@ -244,18 +244,12 @@ export class GeneratedSpeech {
   private planFor(request: SpeechPlaybackRequest): { kind: "static" | "generated"; request: SpeechPlaybackRequest } {
     const base = this.baseRequest(request);
     if (request.audioUrl) return { kind: "static", request: { ...base, audioUrl: request.audioUrl } };
-    if (request.fallbackAudioUrl && !this.generatedCached(base)) {
-      return { kind: "static", request: { ...base, audioUrl: request.fallbackAudioUrl } };
-    }
     return { kind: "generated", request: base };
   }
 
   private candidates(request: SpeechPlaybackRequest): SpeechPlaybackRequest[] {
     const base = this.baseRequest(request);
     if (request.audioUrl) return [{ ...base, audioUrl: request.audioUrl }, base];
-    if (request.fallbackAudioUrl && !this.generatedCached(base)) {
-      return [{ ...base, audioUrl: request.fallbackAudioUrl }, base];
-    }
     if (request.fallbackAudioUrl) return [base, { ...base, audioUrl: request.fallbackAudioUrl }];
     return [base];
   }
