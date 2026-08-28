@@ -142,6 +142,15 @@ let navigationTravel = 0;
 let navigationLastX: number | null = null;
 let lastFootstepAt = 0;
 let lastDrawSfxAt = 0;
+let squashUntil = 0;
+let squashScaleX = 1;
+let squashScaleY = 1;
+
+function triggerSquash(sx: number, sy: number, durationMs: number, nowMs: number): void {
+  squashScaleX = sx;
+  squashScaleY = sy;
+  squashUntil = nowMs + durationMs;
+}
 let pendingDrawingReaction: {
   action: AIActionRequest | null;
   entityIds: string[];
@@ -1952,6 +1961,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       rigRuntime.expression = "neutral";
       animController.playById("idle");
       sfx.land(0.9);
+      triggerSquash(1.08, 0.88, 120, now);
       if ("vibrate" in navigator) try { navigator.vibrate(12); } catch { void 0; }
     }
 
@@ -1963,6 +1973,19 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       rootDeltaY: pose.rootDeltaY * rigRuntime.proportionScale,
       rootRotation: pose.rootRotation,
     });
+    if (now < squashUntil) {
+      const remaining = squashUntil - now;
+      const duration = 120;
+      const p = 1 - remaining / duration;
+      const ease = p < 0.5 ? 2 * p * p : -1 + (4 - 2 * p) * p;
+      const sx = 1 + (squashScaleX - 1) * (1 - ease);
+      const sy = 1 + (squashScaleY - 1) * (1 - ease);
+      const base = rigRuntime.entityTransform;
+      rigRuntime.setEntityTransform({ ...base, scaleX: sx, scaleY: sy });
+    } else if (rigRuntime.entityTransform.scaleX !== 1 || rigRuntime.entityTransform.scaleY !== 1) {
+      const base = rigRuntime.entityTransform;
+      rigRuntime.setEntityTransform({ ...base, scaleX: 1, scaleY: 1 });
+    }
 
     const strokes = rigRuntime.transformedStrokeSegments();
     ctx.save();
@@ -2045,8 +2068,14 @@ phaserWorld = new PhaserWorldController(
     },
     diagnostic: (event, detail) => {
       diagnostics.info(event, detail);
-      if (event === "character_landed") sfx.land(0.85);
-      if (event === "navigation_recovery") sfx.jump();
+      if (event === "character_landed") {
+        sfx.land(0.85);
+        triggerSquash(1.08, 0.88, 120, performance.now());
+      }
+      if (event === "navigation_recovery") {
+        sfx.jump();
+        triggerSquash(0.92, 1.12, 110, performance.now());
+      }
     },
   },
   window.innerWidth,
