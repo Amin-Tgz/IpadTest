@@ -41,6 +41,7 @@ export class RigRuntime {
   private blinkStarted = false;
   look: FaceLook = { targetX: null, targetY: null };
   talkActive = false;
+  voiceLevel = 0;
   expression: FaceExpression = "neutral";
 
   private jointsById = new Map<JointId, Rig["joints"][number]>();
@@ -429,17 +430,25 @@ export class RigRuntime {
       }
     }
     if (isMouth && this.talkActive) {
-      const mouthShape = Math.floor(this.now() / 115) % 3;
-      if (mouthShape === 0) {
-        scaleX = 0.58;
-        scaleY = 1.65;
-      } else if (mouthShape === 1) {
-        scaleX = 1.16;
-        scaleY = 0.72;
-        curveY = 3.2;
+      const e = Math.max(0, Math.min(1, this.voiceLevel));
+      if (e < 0.08) {
+        scaleX = 0.96;
+        scaleY = 0.55;
+      } else if (e < 0.32) {
+        const t = (e - 0.08) / 0.24;
+        scaleX = 0.96 + (0.82 - 0.96) * t;
+        scaleY = 0.55 + (1.05 - 0.55) * t;
+        curveY = 1.1 * t;
+      } else if (e < 0.62) {
+        const t = (e - 0.32) / 0.3;
+        scaleX = 0.82 + (1.16 - 0.82) * t;
+        scaleY = 1.05 + (0.72 - 1.05) * t;
+        curveY = 1.1 + (3.2 - 1.1) * t;
       } else {
-        scaleX = 0.82;
-        scaleY = 1.2;
+        const t = (e - 0.62) / 0.38;
+        scaleX = 1.16 + (0.58 - 1.16) * t;
+        scaleY = 0.72 + (1.65 - 0.72) * t;
+        curveY = 3.2 * (1 - t * 0.45);
       }
     } else if (isMouth && this.expression === "happy") {
       scaleX = 1.12;

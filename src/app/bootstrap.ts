@@ -7,7 +7,9 @@ import { Camera } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { SpeechBubble } from "../story/speech-bubble.js";
 import { GeneratedSpeech } from "../story/generated-speech.js";
+import { INTERJECTIONS } from "../story/interjections.js";
 import { StoryBeatCoordinator, type StoryBeat } from "../story/story-beat.js";
+import { SfxEngine } from "../audio/sfx-engine.js";
 import { buildSampleCharacter, buildSampleManifest } from "./sample-character.js";
 import { AnalysisSpike } from "../character/analysis-spike.js";
 import { JointEditor } from "../character/joint-editor.js";
@@ -104,6 +106,7 @@ const idMap = new IdMap();
 const storage = createSessionStorage();
 const worldEntities = new WorldEntityRegistry();
 const conversation = new ConversationHistory();
+const sfx = new SfxEngine(() => speech.getContext(), (event, detail) => diagnostics.info(event, detail));
 
 const getViewport = () => {
   const { viewportWidth: width, viewportHeight: height } = appState.get();
@@ -137,6 +140,8 @@ let segmentRepair: SegmentRepairEditor | null = null;
 let physicsNavigationWasActive = false;
 let navigationTravel = 0;
 let navigationLastX: number | null = null;
+let lastFootstepAt = 0;
+let lastDrawSfxAt = 0;
 let pendingDrawingReaction: {
   action: AIActionRequest | null;
   entityIds: string[];
@@ -424,10 +429,21 @@ function headAnchorScreen(): { x: number; y: number } {
 const storyBeats = new StoryBeatCoordinator({
   showBubble: (beat) => {
     bubble.show(beat.bubble, headAnchorScreen());
-    if (rigRuntime) rigRuntime.talkActive = true;
     diagnostics.info("story_beat_shown", { id: beat.id, emotion: beat.emotion, motion: beat.motion ?? null });
   },
-  playSpeech: (request) => speech.play(request),
+  playSpeech: (request) => speech.play({
+    ...request,
+    onPlaybackStart: () => {
+      if (rigRuntime) rigRuntime.talkActive = true;
+      request.onPlaybackStart?.();
+    },
+  }),
+  isSpeechInstant: (beat) => speech.isInstant({
+    text: beat.spoken,
+    preset: beat.emotion,
+    audioUrl: beat.audioUrl,
+    fallbackAudioUrl: beat.fallbackAudioUrl,
+  }),
   startMotion: (beat) => startBeatMotion(beat),
   onSettled: (beat, result) => {
     if (rigRuntime) rigRuntime.talkActive = false;
@@ -437,6 +453,7 @@ const storyBeats = new StoryBeatCoordinator({
   },
   cancelSpeech: (reason) => {
     speech.cancel(reason);
+    if (rigRuntime) rigRuntime.talkActive = false;
     rigRuntime?.clearPointing();
   },
 });
@@ -1584,6 +1601,15 @@ const pointer = new PointerInput(canvas, store, camera, {
     scheduleSave();
   },
   onPencilMove: (e) => {
+    const nowMs = performance.now();
+    if (pencilDown && nowMs - lastDrawSfxAt > 55) {
+      const dx = lastPencil ? e.x - lastPencil.x : 0;
+      const dy = lastPencil ? e.y - lastPencil.y : 0;
+      const speed = Math.hypot(dx, dy) * 0.6;
+      sfx.drawTick(speed, e.pressure ?? 0.5);
+      lastDrawSfxAt = nowMs;
+      if ("vibrate" in navigator) try { navigator.vibrate(6); } catch { void 0; }
+    }
     lastPencil = e;
     if (rigRuntime && (appState.get().mode === "live" || appState.get().mode === "awaiting" || appState.get().mode === "fallen_waiting_rescue")) {
       rigRuntime.look = { targetX: e.x, targetY: e.y };
@@ -1591,6 +1617,7 @@ const pointer = new PointerInput(canvas, store, camera, {
   },
   onPencilDown: (e) => {
     lastPencil = e;
+    if ("vibrate" in navigator) try { navigator.vibrate(8); } catch { void 0; }
   },
   onErase: (affectedStrokes) => {
     diagnostics.info("strokes_erased", { affectedStrokes });
@@ -1907,6 +1934,11 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       }
     }
 
+    const walkingNow = walking || phaserWorld?.isNavigating || animController.currentId === "walk";
+    if (walkingNow && now - lastFootstepAt > 340) {
+      sfx.footstep(0.85);
+      lastFootstepAt = now;
+    }
     const physicsMotion = phaserWorld?.motionState();
     const rootForRescue = rigRuntime.jointWorld("root");
     const baselineForRescue = h * BASE_LINE_Y_RATIO;
@@ -1919,6 +1951,8 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
     } else if ((physicsMotion === "grounded" || physicsMotion === "landing") && animController.currentId === "fall") {
       rigRuntime.expression = "neutral";
       animController.playById("idle");
+      sfx.land(0.9);
+      if ("vibrate" in navigator) try { navigator.vibrate(12); } catch { void 0; }
     }
 
     const pose = animController.update(now);
@@ -1965,6 +1999,8 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
   }
   if (appState.get().mode === "segmenting" && segmentRepair) segmentRepair.draw(ctx, camera);
 
+  if (rigRuntime) rigRuntime.voiceLevel = speech.getVoiceLevel();
+  else speech.getVoiceLevel();
   if (bubble.isVisible()) bubble.updateAnchor(headAnchorScreen());
 
   const liveStroke = pointer.liveStroke;
@@ -2007,7 +2043,11 @@ phaserWorld = new PhaserWorldController(
       configurePhysicsGround();
       if (rigRuntime) phaserWorld?.attachCharacter(rigRuntime);
     },
-    diagnostic: (event, detail) => diagnostics.info(event, detail),
+    diagnostic: (event, detail) => {
+      diagnostics.info(event, detail);
+      if (event === "character_landed") sfx.land(0.85);
+      if (event === "navigation_recovery") sfx.jump();
+    },
   },
   window.innerWidth,
   window.innerHeight,
@@ -2021,6 +2061,9 @@ speech.preload(Object.values(QUESTS).flatMap((questDefinition) =>
     fallbackAudioUrl: line.fallbackAudioUrl,
   })),
 ));
+for (const interjection of Object.values(INTERJECTIONS)) {
+  void speech.prime({ text: interjection.text, preset: interjection.preset, audioUrl: interjection.path });
+}
 
 const startExperienceEl = document.createElement("button");
 startExperienceEl.textContent = "شروع";

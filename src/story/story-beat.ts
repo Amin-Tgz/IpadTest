@@ -1,6 +1,7 @@
 import type { MotionId } from "../animation/motion-clips.js";
 import type { HeroVoicePreset } from "../character/living-line-hero.js";
 import type { SpeechPlaybackRequest, SpeechPlaybackResult } from "./generated-speech.js";
+import { interjectionFor } from "./interjections.js";
 
 export interface StoryBeat {
   id: string;
@@ -16,10 +17,13 @@ export interface StoryBeat {
 export interface StoryBeatHooks {
   showBubble(beat: StoryBeat): void;
   playSpeech(request: SpeechPlaybackRequest): Promise<SpeechPlaybackResult>;
+  isSpeechInstant?(beat: StoryBeat): boolean;
   startMotion(beat: StoryBeat): Promise<void>;
   onSettled?(beat: StoryBeat, result: SpeechPlaybackResult): void;
   cancelSpeech(reason: string): void;
 }
+
+const INTERJECTION_GAP_MS = 140;
 
 export class StoryBeatCoordinator {
   private tail: Promise<void> = Promise.resolve();
@@ -39,13 +43,7 @@ export class StoryBeatCoordinator {
       this.hooks.showBubble(beat);
       let motion: Promise<void> | null = null;
       const startMotion = (): void => { motion ??= this.hooks.startMotion(beat); };
-      const result = await this.hooks.playSpeech({
-        text: beat.spoken,
-        preset: beat.emotion,
-        audioUrl: beat.audioUrl,
-        fallbackAudioUrl: beat.fallbackAudioUrl,
-        onPlaybackStart: startMotion,
-      });
+      const result = await this.playWithFiller(beat, startMotion);
       if (result.status === "failed") startMotion();
       const readMs = beat.minimumReadMs ?? Math.max(1_900, Math.min(5_600, beat.bubble.length * 92));
       if (result.status === "failed") {
@@ -62,6 +60,34 @@ export class StoryBeatCoordinator {
     this.generation++;
     this.hooks.cancelSpeech(reason);
     this.tail = Promise.resolve();
+  }
+
+  private async playWithFiller(
+    beat: StoryBeat,
+    startMotion: () => void,
+  ): Promise<SpeechPlaybackResult> {
+    const request: SpeechPlaybackRequest = {
+      text: beat.spoken,
+      preset: beat.emotion,
+      audioUrl: beat.audioUrl,
+      fallbackAudioUrl: beat.fallbackAudioUrl,
+      onPlaybackStart: startMotion,
+    };
+    const instant = beat.audioUrl !== undefined || (this.hooks.isSpeechInstant?.(beat) ?? true);
+    const filler = instant ? null : interjectionFor(beat.emotion);
+    if (!filler) return this.hooks.playSpeech(request);
+
+    const fillerResult = await this.hooks.playSpeech({
+      text: filler.text,
+      preset: filler.preset,
+      audioUrl: filler.path,
+      onPlaybackStart: startMotion,
+    });
+    if (fillerResult.status === "cancelled") {
+      return { status: "cancelled", durationMs: fillerResult.durationMs, source: fillerResult.source };
+    }
+    if (fillerResult.status === "played") await wait(INTERJECTION_GAP_MS);
+    return this.hooks.playSpeech(request);
   }
 }
 

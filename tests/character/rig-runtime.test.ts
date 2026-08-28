@@ -215,8 +215,9 @@ describe("RigRuntime forward kinematics", () => {
     let clock = 0;
     const runtime = new RigRuntime(buildRig(mouthManifest, store), () => clock);
     runtime.talkActive = true;
+    runtime.voiceLevel = 0.05;
     const open = runtime.transformedStrokePoints()[0];
-    clock = 115;
+    runtime.voiceLevel = 0.5;
     const smile = runtime.transformedStrokePoints()[0];
     expect(smile.at(-1)!.x - smile[0].x).toBeGreaterThan(open.at(-1)!.x - open[0].x);
     expect(smile[1].y).toBeGreaterThan(open[1].y);

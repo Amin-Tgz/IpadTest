@@ -1,5 +1,15 @@
-const CACHE = "line-pal-v3";
-const ASSETS = ["/manifest.webmanifest", "/icon.svg"];
+const CACHE = "line-pal-v4";
+const ASSETS = [
+  "/manifest.webmanifest",
+  "/icon.svg",
+  "/audio/hero/shoes-request.pwa",
+  "/audio/hero/tool-request.pwa",
+  "/audio/hero/pond-notice.pwa",
+  "/audio/hero/shoes-protest.pwa",
+  "/audio/hero/interjection-curious.pwa",
+  "/audio/hero/interjection-thinking.pwa",
+  "/audio/hero/interjection-delighted.pwa",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

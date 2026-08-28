@@ -26,10 +26,14 @@ interface ActivePlayback {
   startedAt: number;
   sourceKind: "static" | "generated";
   watchdog: number | null;
+  analyser: AnalyserNode | null;
+  analyserData: Uint8Array<ArrayBuffer> | null;
 }
 
 const GENERATED_BUDGET_MS = 8_000;
 const RETRY_DELAY_MS = 250;
+const DECODED_CACHE_LIMIT = 48;
+const REFRESH_MIN_TEXT_LENGTH = 6;
 
 export function isRetryableSpeechStatus(status: number): boolean {
   return status === 408 || status === 429 || (status >= 500 && status <= 599);
@@ -39,8 +43,11 @@ export class GeneratedSpeech {
   private context: AudioContext | null = null;
   private active: ActivePlayback | null = null;
   private readonly audioCache = new Map<string, ArrayBuffer>();
+  private readonly decodedCache = new Map<string, AudioBuffer>();
   private readonly pendingAudio = new Map<string, Promise<ArrayBuffer>>();
+  private readonly pendingDecoded = new Map<string, Promise<AudioBuffer>>();
   private token = 0;
+  private voiceLevel = 0;
 
   constructor(private readonly diagnostic: GeneratedSpeechDiagnostic = () => void 0) {}
 
@@ -64,20 +71,41 @@ export class GeneratedSpeech {
     }
   }
 
+  getContext(): AudioContext | null {
+    if (!this.supported) return null;
+    return this.ensureContext();
+  }
+
   preload(lines: SpeechPlaybackRequest[]): void {
-    for (const line of lines) {
-      const preloadRequest = line.fallbackAudioUrl
-        ? { ...line, audioUrl: line.fallbackAudioUrl, fallbackAudioUrl: undefined }
-        : line;
-      void this.loadAudio(preloadRequest, new AbortController().signal).catch((error) => {
-        this.diagnostic("preload_error", { textLength: line.text.length, message: describe(error) });
+    for (const line of lines) this.prime(line);
+  }
+
+  prime(request: SpeechPlaybackRequest): Promise<void> {
+    const plan = this.planFor(request);
+    const done = this.loadPlan(plan)
+      .then((): void => undefined)
+      .catch((error) => {
+        this.diagnostic("prime_error", { message: describe(error), static: plan.kind === "static" });
+      });
+    if (plan.kind === "generated") return done;
+    const base = this.baseRequest(request);
+    if (base.text.length >= REFRESH_MIN_TEXT_LENGTH && !this.audioCache.has(this.cacheKey(base))) {
+      void this.loadAudio(base, new AbortController().signal).catch((error) => {
+        this.diagnostic("background_refresh_error", { textLength: base.text.length, message: describe(error) });
       });
     }
+    return done;
+  }
+
+  isInstant(request: SpeechPlaybackRequest): boolean {
+    if (request.audioUrl || request.fallbackAudioUrl) return true;
+    const base = this.baseRequest(request);
+    return this.decodedCache.has(this.cacheKey(base)) || this.audioCache.has(this.cacheKey(base));
   }
 
   play(request: SpeechPlaybackRequest): Promise<SpeechPlaybackResult> {
     const text = request.text.trim();
-    const sourceKind = request.audioUrl ? "static" : "generated";
+    const sourceKind: SpeechPlaybackResult["source"] = request.audioUrl ? "static" : "generated";
     if (!this.supported || text.length === 0) {
       return Promise.resolve({ status: "failed", durationMs: 0, source: sourceKind });
     }
@@ -88,13 +116,16 @@ export class GeneratedSpeech {
     const startedAt = performance.now();
 
     return new Promise<SpeechPlaybackResult>((resolve) => {
-      const active: ActivePlayback = { token, abort, source: null, resolve, startedAt, sourceKind, watchdog: null };
+      const active: ActivePlayback = {
+        token, abort, source: null, resolve, startedAt, sourceKind,
+        watchdog: null, analyser: null, analyserData: null,
+      };
       this.active = active;
       this.diagnostic("generation_requested", {
         ...this.snapshot(),
         textLength: text.length,
         preset: request.preset ?? "curious",
-        source: sourceKind,
+        source: this.planFor(request).kind === "static" ? "static" : "generated",
       });
       void this.beginPlayback(active, { ...request, text });
     });
@@ -119,6 +150,23 @@ export class GeneratedSpeech {
     active.resolve(result);
   }
 
+  getVoiceLevel(): number {
+    const active = this.active;
+    if (!active?.analyser || !active.analyserData || active.source === null) {
+      this.voiceLevel *= 0.8;
+      return Math.min(1, this.voiceLevel);
+    }
+    active.analyser.getByteTimeDomainData(active.analyserData);
+    let peak = 0;
+    for (let i = 0; i < active.analyserData.length; i++) {
+      const deviation = Math.abs(active.analyserData[i] - 128) / 128;
+      if (deviation > peak) peak = deviation;
+    }
+    const instant = Math.min(1, peak * 1.8);
+    this.voiceLevel = Math.max(instant, this.voiceLevel * 0.78);
+    return this.voiceLevel;
+  }
+
   snapshot(): Record<string, unknown> {
     return {
       supported: this.supported,
@@ -126,6 +174,8 @@ export class GeneratedSpeech {
       generating: this.active !== null && this.active.source === null,
       playing: this.active?.source != null,
       cachedLines: this.audioCache.size,
+      decodedLines: this.decodedCache.size,
+      voiceLevel: Math.round(this.voiceLevel * 100) / 100,
     };
   }
 
@@ -133,11 +183,16 @@ export class GeneratedSpeech {
     try {
       const context = this.ensureContext();
       await this.ensureRunning(context, active.abort.signal);
-      const buffer = await this.decodeWithGeneratedFallback(active, request, context);
+      const buffer = await this.loadPreferred(active, request);
       if (!this.isActive(active)) return;
       const source = context.createBufferSource();
       source.buffer = buffer;
-      source.connect(context.destination);
+      const gain = context.createGain();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(gain);
+      gain.connect(analyser);
+      analyser.connect(context.destination);
       source.onended = () => {
         if (!this.isActive(active)) return;
         if (active.watchdog !== null) window.clearTimeout(active.watchdog);
@@ -147,6 +202,8 @@ export class GeneratedSpeech {
         active.resolve(result);
       };
       active.source = source;
+      active.analyser = analyser;
+      active.analyserData = new Uint8Array(analyser.frequencyBinCount);
       source.start();
       request.onPlaybackStart?.();
       active.watchdog = window.setTimeout(() => {
@@ -164,6 +221,7 @@ export class GeneratedSpeech {
         preset: request.preset ?? "curious",
         source: active.sourceKind,
       });
+      if (active.sourceKind === "static") this.primeGeneratedInBackground(request);
     } catch (error) {
       if (!this.isActive(active)) return;
       this.active = null;
@@ -171,6 +229,66 @@ export class GeneratedSpeech {
       this.diagnostic("playback_error", { ...this.snapshot(), message: describe(error), durationMs: result.durationMs });
       active.resolve(result);
     }
+  }
+
+  private primeGeneratedInBackground(request: SpeechPlaybackRequest): void {
+    if (request.audioUrl) return;
+    const base = this.baseRequest(request);
+    if (base.text.length < REFRESH_MIN_TEXT_LENGTH) return;
+    if (this.audioCache.has(this.cacheKey(base)) || this.pendingAudio.has(this.cacheKey(base))) return;
+    void this.loadAudio(base, new AbortController().signal).catch((error) => {
+      this.diagnostic("background_refresh_error", { textLength: base.text.length, message: describe(error) });
+    });
+  }
+
+  private planFor(request: SpeechPlaybackRequest): { kind: "static" | "generated"; request: SpeechPlaybackRequest } {
+    const base = this.baseRequest(request);
+    if (request.audioUrl) return { kind: "static", request: { ...base, audioUrl: request.audioUrl } };
+    if (request.fallbackAudioUrl && !this.generatedCached(base)) {
+      return { kind: "static", request: { ...base, audioUrl: request.fallbackAudioUrl } };
+    }
+    return { kind: "generated", request: base };
+  }
+
+  private candidates(request: SpeechPlaybackRequest): SpeechPlaybackRequest[] {
+    const base = this.baseRequest(request);
+    if (request.audioUrl) return [{ ...base, audioUrl: request.audioUrl }, base];
+    if (request.fallbackAudioUrl && !this.generatedCached(base)) {
+      return [{ ...base, audioUrl: request.fallbackAudioUrl }, base];
+    }
+    if (request.fallbackAudioUrl) return [base, { ...base, audioUrl: request.fallbackAudioUrl }];
+    return [base];
+  }
+
+  private loadPlan(plan: { kind: "static" | "generated"; request: SpeechPlaybackRequest }): Promise<AudioBuffer> {
+    return this.loadDecoded(this.cacheKey(plan.request), plan.request, new AbortController().signal);
+  }
+
+  private async loadPreferred(active: ActivePlayback, request: SpeechPlaybackRequest): Promise<AudioBuffer> {
+    const attempts = this.candidates(request);
+    let lastError: unknown = new Error("speech playback failed");
+    for (let index = 0; index < attempts.length; index++) {
+      const candidate = attempts[index];
+      if (active.abort.signal.aborted) throw new DOMException("Aborted", "AbortError");
+      const key = this.cacheKey(candidate);
+      try {
+        active.sourceKind = candidate.audioUrl ? "static" : "generated";
+        const buffer = await this.loadDecoded(key, candidate, active.abort.signal);
+        if (index > 0) {
+          this.diagnostic(candidate.audioUrl ? "generated_fallback_static" : "static_fallback_generated", {
+            textLength: candidate.text.length,
+            message: describe(lastError),
+          });
+        }
+        return buffer;
+      } catch (error) {
+        if (active.abort.signal.aborted) throw new DOMException("Aborted", "AbortError");
+        lastError = error;
+        if (candidate.audioUrl) this.audioCache.delete(key);
+        else this.decodedCache.delete(key);
+      }
+    }
+    throw lastError;
   }
 
   private async ensureRunning(context: AudioContext, signal: AbortSignal): Promise<void> {
@@ -182,30 +300,25 @@ export class GeneratedSpeech {
     if (resumedState !== "running") throw new Error(`audio context is ${resumedState}`);
   }
 
-  private async decodeWithGeneratedFallback(
-    active: ActivePlayback,
-    request: SpeechPlaybackRequest,
-    context: AudioContext,
-  ): Promise<AudioBuffer> {
-    try {
-      const bytes = await this.loadAudio(request, active.abort.signal);
-      return await context.decodeAudioData(bytes.slice(0));
-    } catch (error) {
-      if (request.fallbackAudioUrl && !active.abort.signal.aborted) {
-        active.sourceKind = "static";
-        this.diagnostic("generated_fallback_static", { textLength: request.text.length, message: describe(error) });
-        const fallback = { text: request.text, preset: request.preset, audioUrl: request.fallbackAudioUrl } satisfies SpeechPlaybackRequest;
-        const bytes = await this.loadAudio(fallback, active.abort.signal);
-        return context.decodeAudioData(bytes.slice(0));
+  private async loadDecoded(key: string, request: SpeechPlaybackRequest, signal: AbortSignal): Promise<AudioBuffer> {
+    const cached = this.decodedCache.get(key);
+    if (cached) return cached;
+    const pending = this.pendingDecoded.get(key);
+    if (pending) return pending;
+    const promise = (async () => {
+      const bytes = await this.loadAudio(request, signal);
+      const context = this.ensureContext();
+      const buffer = await context.decodeAudioData(bytes.slice(0));
+      this.decodedCache.set(key, buffer);
+      while (this.decodedCache.size > DECODED_CACHE_LIMIT) {
+        this.decodedCache.delete(this.decodedCache.keys().next().value!);
       }
-      if (!request.audioUrl || active.abort.signal.aborted) throw error;
-      this.audioCache.delete(this.cacheKey(request));
-      active.sourceKind = "generated";
-      this.diagnostic("static_fallback_generated", { textLength: request.text.length, message: describe(error) });
-      const fallback = { text: request.text, preset: request.preset } satisfies SpeechPlaybackRequest;
-      const bytes = await this.loadAudio(fallback, active.abort.signal);
-      return context.decodeAudioData(bytes.slice(0));
-    }
+      return buffer;
+    })().finally(() => {
+      this.pendingDecoded.delete(key);
+    });
+    this.pendingDecoded.set(key, promise);
+    return promise;
   }
 
   private result(active: ActivePlayback, status: SpeechPlaybackStatus): SpeechPlaybackResult {
@@ -218,6 +331,15 @@ export class GeneratedSpeech {
 
   private isActive(active: ActivePlayback): boolean {
     return this.active === active && this.token === active.token && !active.abort.signal.aborted;
+  }
+
+  private baseRequest(request: SpeechPlaybackRequest): SpeechPlaybackRequest {
+    return { text: request.text.trim(), preset: request.preset ?? "curious" };
+  }
+
+  private generatedCached(base: SpeechPlaybackRequest): boolean {
+    const key = this.cacheKey(base);
+    return this.audioCache.has(key) || this.decodedCache.has(key) || this.pendingAudio.has(key) || this.pendingDecoded.has(key);
   }
 
   private cacheKey(request: SpeechPlaybackRequest): string {
