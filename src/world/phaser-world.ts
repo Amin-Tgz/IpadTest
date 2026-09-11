@@ -14,7 +14,7 @@ import {
 } from "./physics-geometry.js";
 import type { RescuePhase } from "./ladder-rescue.js";
 
-export type PhysicsShape = "platform" | "stairs" | "slope" | "obstacle" | "dynamic" | "ladder";
+export type PhysicsShape = "platform" | "stairs" | "slope" | "obstacle" | "dynamic" | "ladder" | "vehicle";
 
 export interface PhysicsEntitySpec {
   id: string;
@@ -368,6 +368,23 @@ export class PhaserWorldController {
     return true;
   }
 
+  /** Holds the hero still at a root position (riding); physics resumes on release. */
+  holdCharacterAt(root: { x: number; y: number }): boolean {
+    if (!this.scene || !this.characterBody) return false;
+    if (this.navigation) this.stopNavigation();
+    this.setKinematicHold(true);
+    this.scene.matter.body.setPosition(this.characterBody, {
+      x: root.x - this.characterRootOffset.x,
+      y: root.y - this.characterRootOffset.y,
+    });
+    return true;
+  }
+
+  releaseCharacter(): void {
+    this.setKinematicHold(false);
+    this.wakeCharacter("released");
+  }
+
   /** Leaps toward `targetX` and keeps walking there after landing. */
   jumpToward(targetX: number, targetEntityId: string | null = null): NavigationResult {
     if (!this.scene || !this.characterBody || !this.isGrounded()) {
@@ -618,8 +635,8 @@ export class PhaserWorldController {
     this.pendingEntities.set(spec.id, spec);
     const scene = this.scene;
     if (!scene || this.entityBodies.has(spec.id)) return;
-    // A ladder is climbed, never walked into: it has no collider.
-    if (spec.shape === "ladder") {
+    // A ladder is climbed and a vehicle is ridden; neither is walked into.
+    if (spec.shape === "ladder" || spec.shape === "vehicle") {
       this.entityBodies.set(spec.id, []);
       return;
     }

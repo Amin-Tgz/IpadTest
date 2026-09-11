@@ -4,6 +4,8 @@ import { clampCoord, clampConfidence } from "./skeleton.js";
 const MAX_BUBBLE_CHARS = 70;
 const MAX_SPOKEN_CHARS = 100;
 
+const pointSchema = z.object({ x: z.number(), y: z.number() }).strict();
+
 export const drawingObjectSchema = z.object({
   type: z.string().min(1).max(40),
   category: z.enum(["wearable", "held_tool", "decoration", "other"]),
@@ -17,7 +19,12 @@ export const drawingObjectSchema = z.object({
   anchor: z.object({ x: z.number(), y: z.number() }).strict().nullable(),
   orientationDegrees: z.number().default(0),
   affordances: z.array(z.string().max(30)).default([]),
-  physicsShape: z.enum(["platform", "stairs", "slope", "obstacle", "dynamic", "ladder", "none"]).default("none"),
+  physicsShape: z.enum(["platform", "stairs", "slope", "obstacle", "dynamic", "ladder", "vehicle", "none"]).default("none"),
+  vehicle: z.object({
+    facing: z.enum(["left", "right"]),
+    seat: pointSchema,
+    exhaust: pointSchema.nullable(),
+  }).strict().nullable().default(null),
 }).strict().superRefine((object, context) => {
   if ((object.attachTo === null) !== (object.anchor === null)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "attachTo and anchor must either both be set or both be null" });
@@ -25,7 +32,7 @@ export const drawingObjectSchema = z.object({
 });
 
 export const actionRequestSchema = z.object({
-  type: z.enum(["scratch_head", "speak", "react", "equip", "use", "move", "jump", "climb", "interact", "point", "rescue"]),
+  type: z.enum(["scratch_head", "speak", "react", "equip", "use", "move", "jump", "climb", "interact", "point", "rescue", "ride"]),
   targetObjectIndex: z.number().int().min(0).max(7).nullable().default(null),
   direction: z.enum(["left", "right", "up", "down"]).nullable().default(null),
   durationMs: z.number().int().min(100).max(5000).default(900),
@@ -48,7 +55,7 @@ export const drawingAnalysisSchema = z.object({
 }).strict().superRefine((analysis, context) => {
   const action = analysis.action;
   if (!action) return;
-  const targetRequired = ["equip", "use", "climb", "interact", "point", "rescue"].includes(action.type);
+  const targetRequired = ["equip", "use", "climb", "interact", "point", "rescue", "ride"].includes(action.type);
   const target = action.targetObjectIndex === null ? undefined : analysis.objects[action.targetObjectIndex];
   if (targetRequired && !target) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["action", "targetObjectIndex"], message: "action requires a valid targetObjectIndex" });
@@ -85,6 +92,11 @@ export function sanitizeDrawingAnalysis(
     if (object.anchor) {
       object.anchor.x = clampCoord(object.anchor.x, width);
       object.anchor.y = clampCoord(object.anchor.y, height);
+    }
+    for (const point of [object.vehicle?.seat, object.vehicle?.exhaust]) {
+      if (!point) continue;
+      point.x = clampCoord(point.x, width);
+      point.y = clampCoord(point.y, height);
     }
   }
   parsed.reaction.bubble = parsed.reaction.bubble.slice(0, MAX_BUBBLE_CHARS);

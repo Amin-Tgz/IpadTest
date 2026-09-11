@@ -124,6 +124,32 @@ export class SfxEngine {
     }
   }
 
+  /** One low "putt" of a small engine; call repeatedly while riding. */
+  engine(throttle = 0.5): void {
+    const ctx = this.getContext();
+    if (!ctx || ctx.state !== "running") return;
+    try {
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(46 + throttle * 52, now);
+      const low = ctx.createBiquadFilter();
+      low.type = "lowpass";
+      low.frequency.value = 360;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.05 + throttle * 0.06, now + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.075);
+      osc.connect(low);
+      low.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.08);
+    } catch (error) {
+      this.diagnostic("sfx_engine_error", { message: String(error) });
+    }
+  }
+
   private getNoise(ctx: AudioContext): AudioBuffer {
     if (this.noiseBuffer && this.noiseBuffer.sampleRate === ctx.sampleRate) return this.noiseBuffer;
     const length = Math.floor(ctx.sampleRate * 0.5);

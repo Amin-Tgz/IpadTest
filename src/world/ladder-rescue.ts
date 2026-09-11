@@ -77,17 +77,20 @@ export class MovableWorldObject {
   }
 
   transformedStrokes(): Array<Array<{ x: number; y: number }>> {
+    return this.rawStrokes.map((stroke) => stroke.map((point) => this.transformPoint(point)));
+  }
+
+  /** Maps a point given in the drawing's original coordinates to where it is now. */
+  transformPoint(point: { x: number; y: number }): { x: number; y: number } {
     const radians = this.transform.rotation * Math.PI / 180;
     const cos = Math.cos(radians);
     const sin = Math.sin(radians);
-    return this.rawStrokes.map((stroke) => stroke.map((point) => {
-      const localX = (point.x - this.transform.originX) * this.transform.scale;
-      const localY = (point.y - this.transform.originY) * this.transform.scale;
-      return {
-        x: this.transform.x + localX * cos - localY * sin,
-        y: this.transform.y + localX * sin + localY * cos,
-      };
-    }));
+    const localX = (point.x - this.transform.originX) * this.transform.scale;
+    const localY = (point.y - this.transform.originY) * this.transform.scale;
+    return {
+      x: this.transform.x + localX * cos - localY * sin,
+      y: this.transform.y + localX * sin + localY * cos,
+    };
   }
 }
 

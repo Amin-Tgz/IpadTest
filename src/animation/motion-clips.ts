@@ -18,7 +18,8 @@ export type MotionId =
   | "pull_fish"
   | "point"
   | "ladder_pickup"
-  | "ladder_climb";
+  | "ladder_climb"
+  | "ride";
 
 export interface MotionTrack {
   t: number[];
@@ -78,6 +79,26 @@ export function evaluateMotion(clip: MotionClip, timeMs: number): Pose {
 }
 
 export const MOTION_CLIPS: Record<MotionId, MotionClip> = {
+  // Straddling a vehicle, seen from the front: thighs out to the sides, shins
+  // hanging down, hands out on the handlebars, with a small engine shiver.
+  ride: {
+    id: "ride",
+    durationMs: 320,
+    loop: true,
+    jointTracks: {
+      torso: track([[0, -2], [0.5, 1], [1, -2]]),
+      head: track([[0, 2], [0.5, -1], [1, 2]]),
+      left_hip: track([[0, 52], [1, 52]]),
+      right_hip: track([[0, -52], [1, -52]]),
+      left_knee: track([[0, -58], [1, -58]]),
+      right_knee: track([[0, 58], [1, 58]]),
+      left_shoulder: track([[0, 32], [0.5, 29], [1, 32]]),
+      right_shoulder: track([[0, -32], [0.5, -29], [1, -32]]),
+      left_elbow: track([[0, -30], [1, -30]]),
+      right_elbow: track([[0, 30], [1, 30]]),
+    },
+    rootY: track([[0, 0], [0.5, -1.5], [1, 0]]),
+  },
   ladder_pickup: {
     id: "ladder_pickup",
     durationMs: 1250,

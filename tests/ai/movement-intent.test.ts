@@ -49,6 +49,21 @@ describe("movement intent", () => {
     expect(resolveMovementIntent(beside, null)).toMatchObject({ type: "climb", targetObjectIndex: 1 });
   });
 
+  it("rides a drawn motorcycle whether the provider reacted, used it, or asked to move", () => {
+    const bike = [object("arrow", "none"), object("موتور سیکلت", "none")];
+    expect(resolveMovementIntent(bike, null)).toMatchObject({ type: "ride", targetObjectIndex: 1 });
+    expect(resolveMovementIntent(bike, action("react", null))).toMatchObject({ type: "ride", targetObjectIndex: 1 });
+    expect(resolveMovementIntent(bike, action("use", 1))).toMatchObject({ type: "ride", targetObjectIndex: 1 });
+    expect(resolveMovementIntent(bike, action("move", null, "left"))).toMatchObject({ type: "ride", targetObjectIndex: 1, direction: "left" });
+    expect(resolveMovementIntent(bike, action("ride", 0))).toMatchObject({ type: "ride", targetObjectIndex: 1 });
+    const ride = action("ride", 1);
+    expect(resolveMovementIntent(bike, ride)).toBe(ride);
+  });
+
+  it("keeps a jump even when a vehicle is drawn", () => {
+    expect(resolveMovementIntent([object("scooter", "vehicle")], action("jump", null))).toMatchObject({ type: "jump" });
+  });
+
   it("turns a downward move into a jump down", () => {
     expect(resolveMovementIntent([object("arrow", "none")], action("move", null, "down"))).toMatchObject({ type: "jump", direction: "down" });
   });

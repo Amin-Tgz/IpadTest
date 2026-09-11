@@ -1,5 +1,6 @@
 import type { PhysicsShape } from "./phaser-world.js";
 import type { MovableObjectTransform } from "./ladder-rescue.js";
+import type { VehicleHints } from "./vehicle-ride.js";
 
 export interface WorldEntity {
   id: string;
@@ -9,6 +10,8 @@ export interface WorldEntity {
   affordances: string[];
   physicsShape: PhysicsShape | null;
   transform?: MovableObjectTransform;
+  /** Seat and exhaust in the drawing's original coordinates. */
+  vehicle?: VehicleHints | null;
 }
 
 export class WorldEntityRegistry {

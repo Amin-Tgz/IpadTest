@@ -43,12 +43,13 @@ import { installLivingLineHero, LIVING_LINE_HERO_ID, type HeroVoicePreset } from
 import { QUESTS, type QuestState } from "../story/quest-engine.js";
 import { normalizeShoeCandidates, ShoeTutorialProgress } from "../story/shoe-tutorial.js";
 import { resolveObjectStrokes } from "../world/object-strokes.js";
-import { MovableWorldObject } from "../world/ladder-rescue.js";
+import { MovableWorldObject, type MovableObjectTransform } from "../world/ladder-rescue.js";
 import { ParticleFXManager } from "./particles.js";
 import { UiOverlayManager } from "./ui-overlay.js";
 import { RescueCoordinator } from "../world/rescue-coordinator.js";
 import { inferredPhysicsShape, resolveMovementIntent } from "../ai/movement-intent.js";
 import { drawnSurface, type DrawnSurface } from "../world/physics-geometry.js";
+import { VehicleRide, vehicleLayout, type VehicleHints, type VehicleLayout } from "../world/vehicle-ride.js";
 
 const appEl = (() => {
   const el = document.getElementById("app");
@@ -172,6 +173,20 @@ const navigationMemories = new Map<string, string>();
 let introBumpStartedAt: number | null = null;
 let introTimer: number | null = null;
 let fishingLine: { waterPoint: { x: number; y: number }; pullStartedAt: number | null } | null = null;
+
+interface ActiveRide {
+  vehicleId: string;
+  vehicleType: string;
+  movable: MovableWorldObject;
+  layout: VehicleLayout;
+  startTransform: MovableObjectTransform;
+  distance: number;
+  ride: VehicleRide | null;
+  lastSmokeAt: number;
+  lastEngineAt: number;
+  onDone: ((completed: boolean) => void) | null;
+}
+let activeRide: ActiveRide | null = null;
 
 function activateRig(rig: Rig, playSpawn = true): void {
   rigRuntime = new RigRuntime(rig);
@@ -392,11 +407,15 @@ async function restoreSession(): Promise<boolean> {
           surface: surfaceFromStrokes(entity.sourceStrokeIds, entity.bounds),
         });
       }
-      if (entity.transform && entity.sourceStrokeIds.length > 0) {
+      if ((entity.transform || entity.physicsShape === "vehicle") && entity.sourceStrokeIds.length > 0) {
         const source = entity.sourceStrokeIds.map((id) => store.byId(id)).filter((stroke): stroke is Stroke => Boolean(stroke));
         if (source.length > 0) {
-          const movable = new MovableWorldObject(entity.id, source, { x: entity.transform.originX, y: entity.transform.originY });
-          movable.setTransform(entity.transform);
+          const movable = new MovableWorldObject(
+            entity.id,
+            source,
+            entity.transform ? { x: entity.transform.originX, y: entity.transform.originY } : undefined,
+          );
+          if (entity.transform) movable.setTransform(entity.transform);
           rescue.movableObjects.set(entity.id, movable);
           entity.sourceStrokeIds.forEach((id) => rescue.movableStrokeIds.add(id));
         }
@@ -735,6 +754,19 @@ function walkToDrawingReaction(analysis: DrawingAnalysis, entityIds: string[], b
   if (action !== (analysis.action ?? null)) {
     diagnostics.info("movement_intent_resolved", { provided: analysis.action ?? null, resolved: action });
   }
+  if (action?.type === "ride") {
+    const target = action.targetObjectIndex === null ? null : worldEntities.get(entityIds[action.targetObjectIndex] ?? "");
+    const started = startRide(target, action, (completed) => {
+      if (completed) {
+        finishDrawingReaction(null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
+      } else {
+        const stuck = "اوخ! نشد سوارش بشم؛ یه بار دیگه امتحان کنیم؟";
+        finishDrawingReaction(null, entityIds, "protesting", stuck, stuck);
+      }
+    });
+    if (!started) finishDrawingReaction(null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
+    return;
+  }
   if (action?.type === "move" || action?.type === "climb" || action?.type === "jump") {
     if (!executeAIAction(action, entityIds)) {
       finishDrawingReaction(null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
@@ -787,6 +819,168 @@ function walkToDrawingReaction(analysis: DrawingAnalysis, entityIds: string[], b
   diagnostics.info("drawing_reaction_walk_started", { actionId: navigation.actionId, targetX, leftEdge, rightEdge });
 }
 
+function vehicleHintsToWorld(
+  hints: DrawingAnalysis["objects"][number]["vehicle"] | null,
+  mapping: CaptureMapping,
+): VehicleHints | null {
+  if (!hints) return null;
+  const toWorld = (point: { x: number; y: number }) => ({ x: imageToWorldX(point.x, mapping), y: imageToWorldY(point.y, mapping) });
+  return { facing: hints.facing, seat: toWorld(hints.seat), exhaust: hints.exhaust ? toWorld(hints.exhaust) : null };
+}
+
+function vehicleMovable(entity: WorldEntity): MovableWorldObject | null {
+  const existing = rescue.movableObjects.get(entity.id);
+  if (existing) return existing;
+  const source = entity.sourceStrokeIds
+    .map((id) => store.byId(id))
+    .filter((stroke): stroke is Stroke => Boolean(stroke?.active));
+  if (source.length === 0) return null;
+  const movable = new MovableWorldObject(entity.id, source);
+  rescue.movableObjects.set(entity.id, movable);
+  source.forEach((stroke) => rescue.movableStrokeIds.add(stroke.id));
+  return movable;
+}
+
+/** Walks to the child's vehicle; `updateRide` takes over once the hero is beside the seat. */
+function startRide(entity: WorldEntity | null, action: AIActionRequest, onDone: ActiveRide["onDone"]): boolean {
+  if (!rigRuntime || activeRide || !entity || entity.physicsShape !== "vehicle") return false;
+  const movable = vehicleMovable(entity);
+  const root = rigRuntime.jointWorld("root");
+  if (!movable || !root) return false;
+  const hints = entity.vehicle
+    ? {
+        facing: entity.vehicle.facing,
+        seat: movable.transformPoint(entity.vehicle.seat),
+        exhaust: entity.vehicle.exhaust ? movable.transformPoint(entity.vehicle.exhaust) : null,
+      }
+    : null;
+  const preferred = action.direction === "left" ? -1 : action.direction === "right" ? 1 : null;
+  const layout = vehicleLayout(movable.transformedStrokes(), entity.type, hints, preferred);
+  if (!layout) return false;
+  activeRide = {
+    vehicleId: entity.id,
+    vehicleType: entity.type,
+    movable,
+    layout,
+    startTransform: { ...movable.transform },
+    distance: Math.max(480, Math.min(1100, action.durationMs * 0.35)),
+    ride: null,
+    lastSmokeAt: 0,
+    lastEngineAt: 0,
+    onDone,
+  };
+  if (Math.abs(root.x - layout.seat.x) > 24) {
+    const navigation = phaserWorld?.walkTo(layout.seat.x);
+    if (!navigation?.started) {
+      activeRide = null;
+      return false;
+    }
+    animController.playById("walk");
+  }
+  diagnostics.info("ride_started", {
+    vehicleId: entity.id,
+    type: entity.type,
+    facing: layout.facing,
+    seat: { x: Math.round(layout.seat.x), y: Math.round(layout.seat.y) },
+    exhaust: layout.exhaust ? { x: Math.round(layout.exhaust.x), y: Math.round(layout.exhaust.y) } : null,
+    fromHints: Boolean(hints),
+  });
+  conversation.append("system", "action", `Hero is getting on the child's ${entity.type} to ride it.`);
+  refreshReviewControls();
+  return true;
+}
+
+function updateRide(now: number, dt: number, viewportWidth: number): void {
+  const current = activeRide;
+  if (!current || !rigRuntime) return;
+  if (!rescue.movableObjects.has(current.vehicleId)) {
+    endRide(false, "vehicle_erased");
+    return;
+  }
+  if (!current.ride) {
+    if (phaserWorld?.isNavigating) return;
+    if (phaserWorld?.navigationSnapshot().state === "failed") {
+      endRide(false, "approach_failed");
+      return;
+    }
+    const root = rigRuntime.jointWorld("root");
+    if (!root) return;
+    const pivot = { x: current.startTransform.x, y: current.startTransform.y };
+    const groundY = phaserWorld?.getGroundHeightAt(pivot.x) ?? current.layout.bounds.bottom;
+    current.ride = new VehicleRide({
+      layout: current.layout,
+      pivot,
+      riderStart: root,
+      groundY,
+      legReach: 72 * rigRuntime.proportionScale,
+      distance: current.distance,
+      blockedAhead: (frontX) => {
+        const top = phaserWorld?.getGroundHeightAt(frontX) ?? null;
+        return top === null || top < groundY - 14;
+      },
+    });
+    animController.playById("ride");
+    rigRuntime.expression = "happy";
+    sfx.jump();
+    diagnostics.info("ride_mounted", { vehicleId: current.vehicleId, groundY: Math.round(groundY) });
+  }
+  const frame = current.ride.update(dt);
+  current.movable.setTransform({
+    originX: current.movable.identity.originX,
+    originY: current.movable.identity.originY,
+    x: current.startTransform.x + frame.offsetX,
+    y: current.startTransform.y + frame.bounce,
+    rotation: frame.tilt,
+    scale: current.startTransform.scale,
+  });
+  if (frame.phase !== "done") phaserWorld?.holdCharacterAt(frame.riderRoot);
+  if (frame.exhaust && frame.throttle > 0 && now - current.lastSmokeAt > 95 - frame.throttle * 50) {
+    particles.spawnSmoke(frame.exhaust.x, frame.exhaust.y, current.layout.facing > 0 ? -1 : 1, frame.throttle);
+    current.lastSmokeAt = now;
+  }
+  if (frame.phase === "ride" && current.layout.exhaust && now - current.lastEngineAt > 115) {
+    sfx.engine(frame.throttle);
+    current.lastEngineAt = now;
+  }
+  if (frame.phase === "ride") {
+    const screenX = frame.riderRoot.x - camera.state.x;
+    const target = current.layout.facing > 0 && screenX > viewportWidth * 0.58
+      ? frame.riderRoot.x - viewportWidth * 0.38
+      : current.layout.facing < 0 && screenX < viewportWidth * 0.3 && camera.state.x > 0
+        ? Math.max(0, frame.riderRoot.x - viewportWidth * 0.55)
+        : null;
+    if (target !== null) {
+      camera.setX(easeToward(camera.state.x, target, dt));
+      phaserWorld?.setCameraX(camera.state.x);
+    }
+  }
+  if (frame.phase === "done") endRide(true, frame.stoppedBy ?? "distance");
+}
+
+function endRide(completed: boolean, reason: string): void {
+  const current = activeRide;
+  if (!current) return;
+  activeRide = null;
+  phaserWorld?.releaseCharacter();
+  if (rescue.movableObjects.has(current.vehicleId)) {
+    worldEntities.setTransform(current.vehicleId, current.movable.transform, rescue.transformedBounds(current.movable));
+  }
+  if (animController.currentId === "ride" || animController.currentId === "walk") animController.playById("idle");
+  if (rigRuntime) rigRuntime.expression = "neutral";
+  const traveled = Math.round(current.ride?.traveled ?? 0);
+  diagnostics.info("ride_finished", { vehicleId: current.vehicleId, completed, reason, traveled });
+  conversation.append(
+    "system",
+    "action",
+    completed
+      ? `Hero rode the child's ${current.vehicleType} ${traveled}px ${current.layout.facing > 0 ? "right" : "left"}${reason === "blocked" ? ", stopped before something in the way," : ""} and got off; it is parked there now.`
+      : `Hero could not ride the child's ${current.vehicleType} (${reason}).`,
+  );
+  scheduleSave();
+  refreshReviewControls();
+  current.onDone?.(completed);
+}
+
 function surfaceFromStrokes(strokeIds: readonly string[], bounds: WorldEntity["bounds"]): DrawnSurface | undefined {
   const strokes = strokeIds
     .map((id) => store.byId(id))
@@ -823,6 +1017,7 @@ function registerWorldObjects(
       bounds,
       affordances: object.affordances,
       physicsShape,
+      vehicle: physicsShape === "vehicle" ? vehicleHintsToWorld(object.vehicle ?? null, mapping) : null,
     });
     if (physicsShape) {
       phaserWorld?.addEntity({
@@ -832,6 +1027,10 @@ function registerWorldObjects(
         angleDegrees: object.orientationDegrees,
         surface: surfaceFromStrokes(perObject[index], bounds),
       });
+      if (physicsShape === "vehicle") {
+        const entity = worldEntities.get(id);
+        if (entity) vehicleMovable(entity);
+      }
       if (physicsShape === "dynamic" && perObject[index].length > 0) {
         const source = perObject[index].map((sid) => store.byId(sid)).filter((s): s is Stroke => Boolean(s && s.active));
         if (source.length > 0) {
@@ -963,6 +1162,8 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
       return true;
     case "react":
       return false;
+    case "ride":
+      return startRide(target, action, null);
     case "rescue":
       // The dedicated fallen-state coordinator owns rescue transforms and
       // climbing; normal free-play must never improvise them here.
@@ -1303,7 +1504,7 @@ function refreshReviewControls(): void {
   if (mode === "intro" && spike.status !== "analyzing" && spike.status !== "done" && spike.userHasDrawn()) {
     ui.reviveEl.style.opacity = "1";
     ui.reviveEl.style.pointerEvents = "auto";
-  } else if ((mode === "awaiting" || mode === "fallen_waiting_rescue") && !analysisInFlight && !pendingDrawingReaction && hasPendingReview()) {
+  } else if ((mode === "awaiting" || mode === "fallen_waiting_rescue") && !analysisInFlight && !pendingDrawingReaction && !activeRide && hasPendingReview()) {
     ui.showReview();
     diagnostics.info("drawing_review_button_shown", { checkpoint, strokeCount: store.count(), groundChangePending });
   }
@@ -1311,7 +1512,7 @@ function refreshReviewControls(): void {
 
 function onReviewClick(): void {
   const mode = appState.get().mode;
-  if (analysisInFlight || pendingDrawingReaction || (mode !== "awaiting" && mode !== "fallen_waiting_rescue") || !hasPendingReview()) return;
+  if (analysisInFlight || pendingDrawingReaction || activeRide || (mode !== "awaiting" && mode !== "fallen_waiting_rescue") || !hasPendingReview()) return;
   ui.hideReview();
   void resolveDrawingAttempt();
 }
@@ -1552,6 +1753,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
     ctx.stroke();
   }
   particles.updateAndDrawDust(ctx, camera);
+  particles.updateAndDrawSmoke(ctx, camera);
 
   rescue.updateLadderRescue(now);
 
@@ -1671,7 +1873,9 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       }
     }
 
-    if (rigRuntime && phaserWorld && (phaserWorld.isGrounded() || phaserWorld.motionState() === "landing")) {
+    updateRide(now, dt, w);
+
+    if (rigRuntime && phaserWorld && !activeRide?.ride && (phaserWorld.isGrounded() || phaserWorld.motionState() === "landing")) {
       const leftFoot = rigRuntime.jointWorld("left_foot");
       const rightFoot = rigRuntime.jointWorld("right_foot");
       let correction = 0;

@@ -6,10 +6,12 @@ type IntentObject = Pick<DrawingObject, "type" | "affordances" | "physicsShape" 
 const INVITES_CLIMBING = new Set<PhysicsShape>(["stairs", "slope", "ladder"]);
 const CLIMB_TARGETS = new Set<PhysicsShape>(["stairs", "slope", "ladder", "obstacle"]);
 const PASSIVE_ACTIONS = new Set<AIActionRequest["type"]>(["react", "speak", "scratch_head", "point"]);
+const RIDE_REQUESTS = new Set<AIActionRequest["type"]>(["ride", "move", "use", "interact", "equip", "climb"]);
 
 export function inferredPhysicsShape(object: Pick<DrawingObject, "type" | "affordances" | "physicsShape">): PhysicsShape | null {
   if (object.physicsShape && object.physicsShape !== "none") return object.physicsShape;
   const semantic = `${object.type} ${object.affordances.join(" ")}`.toLowerCase();
+  if (/motor|bike|bicycle|scooter|vespa|\bcar\b|truck|\bbus\b|jeep|tractor|skateboard|vehicle|موتور|دوچرخه|ماشین|اسکوتر|کامیون|اتوبوس|جیپ|تراکتور|اسکیت/.test(semantic)) return "vehicle";
   if (/ladder|نردبان/.test(semantic)) return "ladder";
   if (/stair|step|پله/.test(semantic)) return "stairs";
   if (/slope|ramp|hill|mountain|شیب|تپه|کوه/.test(semantic)) return "slope";
@@ -39,12 +41,21 @@ export function resolveMovementIntent(objects: IntentObject[], action: AIActionR
     shapes.findIndex((shape) => shape !== null && allowed.has(shape));
   const inviting = firstIndex(INVITES_CLIMBING);
   const climbable = inviting >= 0 ? inviting : firstIndex(CLIMB_TARGETS);
+  const vehicle = shapes.indexOf("vehicle");
 
-  if (!action || PASSIVE_ACTIONS.has(action.type)) return inviting >= 0 ? climb(inviting) : action;
-
-  const targetIndex = action.targetObjectIndex;
+  const targetIndex = action?.targetObjectIndex ?? null;
   const target = targetIndex === null ? null : objects[targetIndex] ?? null;
   const targetShape = targetIndex === null ? null : shapes[targetIndex] ?? null;
+
+  if (vehicle >= 0 && (!action || PASSIVE_ACTIONS.has(action.type) || RIDE_REQUESTS.has(action.type))) {
+    if (action?.type === "ride" && targetShape === "vehicle") return action;
+    if (!action || PASSIVE_ACTIONS.has(action.type) || action.type === "ride" || targetShape === "vehicle" || target === null) {
+      const direction = action?.direction === "left" || action?.direction === "right" ? action.direction : null;
+      return { type: "ride", targetObjectIndex: vehicle, direction, durationMs: Math.max(1200, action?.durationMs ?? 1200) };
+    }
+  }
+
+  if (!action || PASSIVE_ACTIONS.has(action.type)) return inviting >= 0 ? climb(inviting) : action;
 
   if (action.type === "climb") {
     if (targetShape !== null && CLIMB_TARGETS.has(targetShape)) return action;
