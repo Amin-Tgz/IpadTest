@@ -23,14 +23,54 @@ export function movementDestination(
     : direction === "right"
       ? 1
       : target && target.bounds.x < rootX ? -1 : 1;
-  const needsClimb = target?.physicsShape === "stairs" || target?.physicsShape === "slope";
+  const needsClimb = target?.physicsShape === "stairs" || target?.physicsShape === "slope" || target?.physicsShape === "ladder";
   const crossesSurface = target?.physicsShape === "platform" || /bridge|پل/i.test(target?.type ?? "");
-  const x = target
-    ? target.bounds.x + ((needsClimb || crossesSurface)
-      ? (resolvedDirection > 0 ? target.bounds.width + 28 : -28)
-      : target.bounds.width / 2)
-    : rootX + resolvedDirection * Math.max(140, Math.min(320, durationMs * 0.18));
+  const solid = target !== null && SOLID_SHAPES.has(target.physicsShape ?? "");
+  let x: number;
+  if (!target) {
+    x = rootX + resolvedDirection * Math.max(140, Math.min(320, durationMs * 0.18));
+  } else if (needsClimb || crossesSurface) {
+    x = target.bounds.x + (resolvedDirection > 0 ? target.bounds.width + 28 : -28);
+  } else if (solid) {
+    x = rootX <= target.bounds.x + target.bounds.width / 2
+      ? target.bounds.x - SOLID_CLEARANCE
+      : target.bounds.x + target.bounds.width + SOLID_CLEARANCE;
+  } else {
+    x = target.bounds.x + target.bounds.width / 2;
+  }
   return { x, direction: resolvedDirection, needsClimb, crossesSurface };
+}
+
+const SOLID_SHAPES = new Set(["obstacle", "dynamic"]);
+const SOLID_CLEARANCE = 36;
+
+export type JumpDestination =
+  | { kind: "toward"; x: number }
+  | { kind: "drop"; direction: -1 | 1 | null }
+  | { kind: "hop" };
+
+/**
+ * Where a requested jump lands: at the tip of a drawn arrow, on a drawn
+ * object, or off whatever the hero stands on in the requested direction.
+ */
+export function jumpDestination(
+  rootX: number,
+  direction: "left" | "right" | "up" | "down" | null,
+  target: { bounds: InteractionBounds; physical: boolean } | null,
+): JumpDestination {
+  if (target) {
+    const { bounds } = target;
+    if (target.physical) return { kind: "toward", x: bounds.x + bounds.width / 2 };
+    const leftEnd = bounds.x;
+    const rightEnd = bounds.x + bounds.width;
+    if (direction === "right") return { kind: "toward", x: rightEnd };
+    if (direction === "left") return { kind: "toward", x: leftEnd };
+    return { kind: "toward", x: Math.abs(rightEnd - rootX) >= Math.abs(leftEnd - rootX) ? rightEnd : leftEnd };
+  }
+  if (direction === "left") return { kind: "drop", direction: -1 };
+  if (direction === "right") return { kind: "drop", direction: 1 };
+  if (direction === "down") return { kind: "drop", direction: null };
+  return { kind: "hop" };
 }
 
 export function farthestToolPoint(

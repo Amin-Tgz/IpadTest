@@ -30,6 +30,13 @@ export function createApp(deps: AppDeps = {}) {
   const speechGenerator = deps.speechGenerator ?? new GeminiSpeechGenerator(cfg);
   const app = express();
 
+  app.set("trust proxy", 1);
+  app.disable("x-powered-by");
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    next();
+  });
+
   app.use(express.json({ limit: "24mb" }));
 
   app.get("/api/health", (_req, res) => {

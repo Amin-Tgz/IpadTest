@@ -4,6 +4,15 @@ export interface CameraState {
   zoom: number;
 }
 
+/**
+ * Camera y that keeps the hero's head (and the bubble above it) on screen
+ * when it stands on top of something tall. Never scrolls below the ground
+ * framing, so ordinary play keeps the baseline where the child expects it.
+ */
+export function verticalFollowTarget(headWorldY: number, viewportHeight: number): number {
+  return Math.min(0, headWorldY - Math.max(140, viewportHeight * 0.2));
+}
+
 export class Camera {
   state: CameraState = { x: 0, y: 0, zoom: 1 };
 

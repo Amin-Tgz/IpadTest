@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { Camera } from "../../src/world/camera.js";
+import { Camera, verticalFollowTarget } from "../../src/world/camera.js";
 
 describe("camera", () => {
+  it("rises to keep a hero standing on a tall drawing on screen, and never sinks below the ground framing", () => {
+    expect(verticalFollowTarget(400, 768)).toBe(0);
+    expect(verticalFollowTarget(-40, 768)).toBeCloseTo(-40 - 768 * 0.2);
+    expect(verticalFollowTarget(100, 500)).toBe(-40);
+  });
+
   it("round-trips world to screen and back", () => {
     const camera = new Camera();
     camera.setX(120);

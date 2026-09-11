@@ -1,6 +1,17 @@
 import Phaser from "phaser";
 import type { RigRuntime } from "../character/rig-runtime.js";
-import { stairStepRects, stairTopWaypoints } from "./physics-geometry.js";
+import {
+  centeredRectToSupport,
+  ladderClimbRoute,
+  ladderLanding,
+  stairStepRects,
+  surfaceBounds,
+  surfaceClimbRoute,
+  surfaceSupportRects,
+  type DrawnSurface,
+  type RouteWaypoint,
+  type SupportRect,
+} from "./physics-geometry.js";
 import type { RescuePhase } from "./ladder-rescue.js";
 
 export type PhysicsShape = "platform" | "stairs" | "slope" | "obstacle" | "dynamic" | "ladder";
@@ -13,7 +24,10 @@ export interface PhysicsEntitySpec {
   width: number;
   height: number;
   angleDegrees?: number;
+  surface?: DrawnSurface;
 }
+
+const SURFACE_SHAPES = new Set<PhysicsShape>(["stairs", "slope", "obstacle"]);
 
 export interface PhaserWorldCallbacks {
   render(now: number, context: CanvasRenderingContext2D, resolution: number): void;
@@ -23,7 +37,7 @@ export interface PhaserWorldCallbacks {
 
 export type LocomotionState = "idle" | "walking" | "climbing" | "jumping" | "falling" | "landing" | "failed";
 
-export interface NavigationWaypoint { x: number; y?: number }
+export type NavigationWaypoint = RouteWaypoint;
 export interface NavigationResult { started: boolean; actionId: string; reason?: string }
 export interface NavigationSnapshot {
   actionId: string | null;
@@ -37,6 +51,7 @@ export interface NavigationSnapshot {
   failureReason: string | null;
   rescuePhase: RescuePhase;
   rescueComplete: boolean;
+  climbingSegment: boolean;
 }
 
 interface NavigationState {
@@ -52,6 +67,9 @@ interface NavigationState {
   lastProgressAt: number;
   lastX: number;
   recoveryUsed: boolean;
+  kinematic: boolean;
+  lastTick: number;
+  pauseUntil: number | null;
 }
 
 export class LivingDrawingScene extends Phaser.Scene {
@@ -79,13 +97,15 @@ export class PhaserWorldController {
   private characterBody: MatterJS.BodyType | null = null;
   private characterRootOffset = { x: 0, y: 0 };
   private characterHalfHeight = 20;
+  private characterHalfWidth = 14;
+  private kinematicHold = false;
   private readonly entityBodies = new Map<string, MatterJS.BodyType[]>();
   private readonly pendingEntities = new Map<string, PhysicsEntitySpec>();
   private navigation: NavigationState | null = null;
   private lastNavigation: NavigationSnapshot = {
     actionId: null, state: "idle", targetX: null, targetY: null, targetEntityId: null,
     waypointIndex: 0, waypointCount: 0, progress: 0, failureReason: null,
-    rescuePhase: "NONE", rescueComplete: false,
+    rescuePhase: "NONE", rescueComplete: false, climbingSegment: false,
   };
   private actionSequence = 0;
   private wasAirborne = false;
@@ -185,6 +205,7 @@ export class PhaserWorldController {
     const center = { x: root.x, y: maxY - height / 2 };
     this.characterRootOffset = { x: root.x - center.x, y: root.y - center.y };
     this.characterHalfHeight = height / 2;
+    this.characterHalfWidth = width / 2;
     this.characterBody = scene.matter.add.rectangle(center.x, center.y, width, height, {
       label: "living-character",
       friction: 0.85,
@@ -239,13 +260,26 @@ export class PhaserWorldController {
   climbTo(targetX: number, speed?: number, targetEntityId: string | null = null): NavigationResult {
     const spec = targetEntityId ? this.pendingEntities.get(targetEntityId) : undefined;
     const direction = this.characterBody && targetX < this.characterBody.position.x ? -1 : 1;
-    const waypoints = spec?.shape === "stairs" ? this.stairWaypoints(spec, direction) : undefined;
-    const targetY = waypoints?.at(-1)?.y;
-    return this.startNavigation(targetX, targetY, true, speed, targetEntityId, waypoints);
+    const body = { halfWidth: this.characterHalfWidth, halfHeight: this.characterHalfHeight };
+    let route: NavigationWaypoint[] = [];
+    if (spec?.shape === "ladder") {
+      const ladder = spec.surface
+        ? surfaceBounds(spec.surface)
+        : { left: spec.x, right: spec.x + spec.width, top: spec.y, bottom: spec.y + spec.height };
+      const standY = this.characterBody?.position.y ?? ladder.bottom - this.characterHalfHeight;
+      route = ladderClimbRoute(ladder, body, standY, ladderLanding(ladder, this.staticSupports(spec.id), direction), direction);
+    } else {
+      const supports = spec ? this.climbableSupports(spec) : null;
+      if (supports && supports.length > 0) route = surfaceClimbRoute(supports, body, direction);
+    }
+    if (route.length === 0) return this.startNavigation(targetX, undefined, true, speed, targetEntityId);
+    const end = route.at(-1)!;
+    return this.startNavigation(end.x, end.y, true, speed, targetEntityId, route, true);
   }
 
   stopNavigation(): void {
     this.navigation = null;
+    this.setKinematicHold(false);
     this.moveCharacter(0);
   }
 
@@ -334,6 +368,45 @@ export class PhaserWorldController {
     return true;
   }
 
+  /** Leaps toward `targetX` and keeps walking there after landing. */
+  jumpToward(targetX: number, targetEntityId: string | null = null): NavigationResult {
+    if (!this.scene || !this.characterBody || !this.isGrounded()) {
+      return { started: false, actionId: `move_${this.actionSequence + 1}`, reason: "character_not_grounded" };
+    }
+    const direction = targetX < this.characterBody.position.x ? -1 : 1;
+    const result = this.startNavigation(targetX, undefined, false, undefined, targetEntityId);
+    if (!result.started || !this.navigation) return result;
+    const strength = Math.max(8, Math.min(16, this.characterHalfHeight * 0.075));
+    this.scene.matter.body.setVelocity(this.characterBody, { x: direction * this.navigation.speed, y: -strength });
+    this.emit("jump_started", { actionId: result.actionId, targetX, direction });
+    return result;
+  }
+
+  /**
+   * Landing x for jumping off whatever the hero stands on: just past the
+   * nearest point where the ground drops back to the floor. Null on the floor.
+   */
+  dropLandingX(preferred: -1 | 1 | null): number | null {
+    const body = this.characterBody;
+    if (!body || this.floors.length === 0) return null;
+    const footY = body.bounds.max.y;
+    const floorTop = Math.min(...this.floors.map((floor) => floor.bounds.min.y));
+    if (footY > floorTop - 30) return null;
+    const found: Array<{ x: number; distance: number; side: -1 | 1 }> = [];
+    for (const side of [1, -1] as const) {
+      for (let distance = 8; distance <= 900; distance += 8) {
+        const x = body.position.x + side * distance;
+        const top = this.getGroundHeightAt(x, footY);
+        if (top !== null && top >= floorTop - 4) {
+          found.push({ x: x + side * (this.characterHalfWidth + 16), distance, side });
+          break;
+        }
+      }
+    }
+    const pick = found.find((edge) => edge.side === preferred) ?? found.sort((a, b) => a.distance - b.distance)[0];
+    return pick?.x ?? null;
+  }
+
   isGrounded(): boolean {
     if (!this.characterBody) return false;
     const supports = [
@@ -348,11 +421,84 @@ export class PhaserWorldController {
     });
   }
 
+  /**
+   * Carries the body tread by tread along a drawn surface. The body is held
+   * static for the climb: a dynamic box pushed up a staircase wedges on riser
+   * corners and fights gravity, so it would never reach the top.
+   */
+  private updateKinematicClimb(time: number, navigation: NavigationState, waypoint: NavigationWaypoint & { y: number }): void {
+    if (!this.scene || !this.characterBody) return;
+    const body = this.characterBody;
+    this.setKinematicHold(true);
+    const dt = Math.min(64, Math.max(0, time - navigation.lastTick));
+    navigation.lastTick = time;
+    const dx = waypoint.x - body.position.x;
+    const dy = waypoint.y - body.position.y;
+    const distance = Math.hypot(dx, dy);
+    // Matter velocity is px per 60fps step; walk at roughly walking pace and
+    // climb hand over hand more slowly.
+    const step = navigation.speed * (dt / 16.667) * (waypoint.climb ? 0.55 : 0.82);
+    if (distance > step) {
+      this.scene.matter.body.setPosition(body, {
+        x: body.position.x + (dx * step) / distance,
+        y: body.position.y + (dy * step) / distance,
+      });
+      this.recordProgress(navigation);
+      return;
+    }
+    this.scene.matter.body.setPosition(body, { x: waypoint.x, y: waypoint.y });
+    if (waypoint.pauseMs) {
+      navigation.pauseUntil ??= time + waypoint.pauseMs;
+      if (time < navigation.pauseUntil) return;
+      navigation.pauseUntil = null;
+    }
+    if (navigation.waypointIndex < navigation.waypoints.length - 1) {
+      navigation.waypointIndex++;
+      navigation.lastProgressAt = time;
+      this.emit("navigation_waypoint", { actionId: navigation.actionId, waypointIndex: navigation.waypointIndex });
+      return;
+    }
+    const completed = navigation.actionId;
+    this.stopNavigation();
+    this.lastNavigation = { ...this.lastNavigation, actionId: completed, state: "idle", progress: 1, failureReason: null, climbingSegment: false };
+    this.emit("navigation_arrived", { actionId: completed, x: body.position.x, y: body.position.y });
+  }
+
+  private recordProgress(navigation: NavigationState): void {
+    const total = Math.max(1, navigation.waypoints.length);
+    this.lastNavigation = {
+      actionId: navigation.actionId,
+      state: navigation.state,
+      targetX: navigation.targetX,
+      targetY: navigation.targetY ?? null,
+      targetEntityId: navigation.targetEntityId,
+      waypointIndex: navigation.waypointIndex,
+      waypointCount: total,
+      progress: Math.min(0.99, navigation.waypointIndex / total),
+      failureReason: null,
+      rescuePhase: this.rescuePhase,
+      rescueComplete: this.rescuePhase === "RECOVERED",
+      climbingSegment: Boolean(navigation.waypoints[navigation.waypointIndex]?.climb),
+    };
+  }
+
+  private setKinematicHold(hold: boolean): void {
+    if (!this.scene || !this.characterBody || this.kinematicHold === hold) return;
+    this.kinematicHold = hold;
+    this.scene.matter.body.setStatic(this.characterBody, hold);
+    this.scene.matter.body.setVelocity(this.characterBody, { x: 0, y: 0 });
+  }
+
   private updateNavigation(time: number): void {
     if (!this.scene || !this.characterBody || !this.navigation) return;
     this.wakeCharacter("navigation_tick");
     const navigation = this.navigation;
     const waypoint = navigation.waypoints[navigation.waypointIndex] ?? { x: navigation.targetX, y: navigation.targetY };
+    if (navigation.kinematic && waypoint.y !== undefined) {
+      this.updateKinematicClimb(time, navigation, { ...waypoint, y: waypoint.y });
+      return;
+    }
+    navigation.lastTick = time;
     const dx = waypoint.x - this.characterBody.position.x;
     const dy = waypoint.y === undefined ? 0 : waypoint.y - this.characterBody.position.y;
     const arrival = Math.max(10, Math.min(24, this.characterHalfHeight * 0.08));
@@ -365,7 +511,7 @@ export class PhaserWorldController {
       }
       const completed = navigation.actionId;
       this.stopNavigation();
-      this.lastNavigation = { ...this.lastNavigation, actionId: completed, state: "idle", progress: 1, failureReason: null };
+      this.lastNavigation = { ...this.lastNavigation, actionId: completed, state: "idle", progress: 1, failureReason: null, climbingSegment: false };
       this.emit("navigation_arrived", { actionId: completed, x: this.characterBody.position.x, y: this.characterBody.position.y });
       return;
     }
@@ -393,20 +539,7 @@ export class PhaserWorldController {
       nextY = -Math.max(5.5, Math.min(13, Math.sqrt(Math.abs(dy)) * 1.25));
     }
     this.scene.matter.body.setVelocity(this.characterBody, { x: direction * navigation.speed, y: nextY });
-    const total = Math.max(1, navigation.waypoints.length);
-    this.lastNavigation = {
-      actionId: navigation.actionId,
-      state: navigation.state,
-      targetX: navigation.targetX,
-      targetY: navigation.targetY ?? null,
-      targetEntityId: navigation.targetEntityId,
-      waypointIndex: navigation.waypointIndex,
-      waypointCount: total,
-      progress: Math.min(0.99, navigation.waypointIndex / total),
-      failureReason: null,
-      rescuePhase: this.rescuePhase,
-      rescueComplete: this.rescuePhase === "RECOVERED",
-    };
+    this.recordProgress(navigation);
   }
 
   private startNavigation(
@@ -416,6 +549,7 @@ export class PhaserWorldController {
     speed: number | undefined,
     targetEntityId: string | null,
     waypoints?: NavigationWaypoint[],
+    kinematic = false,
   ): NavigationResult {
     const actionId = `move_${++this.actionSequence}`;
     if (!this.scene || !this.characterBody) return { started: false, actionId, reason: "character_body_unavailable" };
@@ -429,19 +563,35 @@ export class PhaserWorldController {
       actionId, state: climb ? "climbing" : "walking", targetX, targetY, targetEntityId,
       speed: scaledSpeed, waypoints: route, waypointIndex: 0, startedAt: now,
       lastProgressAt: now, lastX: this.characterBody.position.x, recoveryUsed: false,
+      kinematic, lastTick: now, pauseUntil: null,
     };
     this.wakeCharacter("navigation_start");
     this.lastNavigation = {
       actionId, state: this.navigation.state, targetX, targetY: targetY ?? null, targetEntityId,
       waypointIndex: 0, waypointCount: route.length, progress: 0, failureReason: null,
-      rescuePhase: this.rescuePhase, rescueComplete: this.rescuePhase === "RECOVERED",
+      rescuePhase: this.rescuePhase, rescueComplete: this.rescuePhase === "RECOVERED", climbingSegment: false,
     };
     this.emit("navigation_started", { actionId, state: this.navigation.state, targetX, targetY, targetEntityId, route });
     return { started: true, actionId };
   }
 
-  private stairWaypoints(spec: PhysicsEntitySpec, direction: number): NavigationWaypoint[] {
-    return stairTopWaypoints(spec, this.characterHalfHeight, direction < 0 ? -1 : 1);
+  private staticSupports(excludeId: string): SupportRect[] {
+    return [...this.entityBodies.entries()]
+      .filter(([id]) => id !== excludeId)
+      .flatMap(([, bodies]) => bodies)
+      .filter((support) => support.isStatic)
+      .map((support) => ({
+        left: support.bounds.min.x,
+        right: support.bounds.max.x,
+        top: support.bounds.min.y,
+        bottom: support.bounds.max.y,
+      }));
+  }
+
+  private climbableSupports(spec: PhysicsEntitySpec): SupportRect[] | null {
+    if (spec.surface && SURFACE_SHAPES.has(spec.shape)) return surfaceSupportRects(spec.surface);
+    if (spec.shape === "stairs") return stairStepRects(spec).map(centeredRectToSupport);
+    return null;
   }
 
   private wakeCharacter(reason: string): void {
@@ -454,8 +604,9 @@ export class PhaserWorldController {
   private failNavigation(reason: string): void {
     const actionId = this.navigation?.actionId ?? null;
     this.navigation = null;
+    this.setKinematicHold(false);
     this.moveCharacter(0);
-    this.lastNavigation = { ...this.lastNavigation, actionId, state: "failed", failureReason: reason };
+    this.lastNavigation = { ...this.lastNavigation, actionId, state: "failed", failureReason: reason, climbingSegment: false };
     this.emit("navigation_failed", { actionId, reason });
   }
 
@@ -467,6 +618,11 @@ export class PhaserWorldController {
     this.pendingEntities.set(spec.id, spec);
     const scene = this.scene;
     if (!scene || this.entityBodies.has(spec.id)) return;
+    // A ladder is climbed, never walked into: it has no collider.
+    if (spec.shape === "ladder") {
+      this.entityBodies.set(spec.id, []);
+      return;
+    }
     const bodies: MatterJS.BodyType[] = [];
     const common = {
       isStatic: spec.shape !== "dynamic",
@@ -474,13 +630,14 @@ export class PhaserWorldController {
       friction: 0.8,
       restitution: spec.shape === "dynamic" ? 0.35 : 0,
     };
-    if (spec.shape === "stairs") {
-      for (const step of stairStepRects(spec)) {
+    const supports = this.climbableSupports(spec);
+    if (supports) {
+      for (const rect of supports) {
         bodies.push(scene.matter.add.rectangle(
-          step.x,
-          step.y,
-          step.width,
-          step.height,
+          (rect.left + rect.right) / 2,
+          (rect.top + rect.bottom) / 2,
+          rect.right - rect.left + 1,
+          Math.max(4, rect.bottom - rect.top),
           common,
         ));
       }
@@ -544,7 +701,8 @@ export class PhaserWorldController {
     return { x: body.position.x, y: body.position.y, angle: body.angle };
   }
 
-  getGroundHeightAt(x: number): number | null {
+  /** Top of the highest support under `x` that is not above `footY` (a riser beside the foot is not ground). */
+  getGroundHeightAt(x: number, footY = -Infinity): number | null {
     const supports = [
       ...this.floors,
       ...[...this.entityBodies.values()].flat().filter((body) => body.isStatic),
@@ -553,14 +711,8 @@ export class PhaserWorldController {
     for (const support of supports) {
       if (x < support.bounds.min.x - 6 || x > support.bounds.max.x + 6) continue;
       const top = support.bounds.min.y;
-      if (best === null || top < best) {
-        // Prefer the highest support that is still below; we will filter by caller
-        // but for ground we want the smallest y (highest) among overlapping supports.
-        // Keep the first overlapping; caller checks delta.
-        best = top;
-        // Actually we want the support whose top is closest to foot; but we can
-        // return the smallest y that is still above foot? For simplicity return min top.
-      }
+      if (top < footY - 2) continue;
+      if (best === null || top < best) best = top;
     }
     return best;
   }

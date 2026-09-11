@@ -1,11 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { farthestToolPoint, fishingHookPosition, movementDestination } from "../../src/world/interaction-geometry.js";
+import { farthestToolPoint, fishingHookPosition, jumpDestination, movementDestination } from "../../src/world/interaction-geometry.js";
 
 describe("interaction geometry", () => {
+  it("jumps to the tip of the arrow the child drew, not its middle", () => {
+    const arrow = { bounds: { x: 620, y: 240, width: 280, height: 260 }, physical: false };
+    expect(jumpDestination(600, "right", arrow)).toEqual({ kind: "toward", x: 900 });
+    expect(jumpDestination(600, null, arrow)).toEqual({ kind: "toward", x: 900 });
+    expect(jumpDestination(950, null, arrow)).toEqual({ kind: "toward", x: 620 });
+  });
+
+  it("jumps onto a drawn object, or off the current height when no target is given", () => {
+    const box = { bounds: { x: 400, y: 500, width: 80, height: 80 }, physical: true };
+    expect(jumpDestination(200, "right", box)).toEqual({ kind: "toward", x: 440 });
+    expect(jumpDestination(200, "right", null)).toEqual({ kind: "drop", direction: 1 });
+    expect(jumpDestination(200, "down", null)).toEqual({ kind: "drop", direction: null });
+    expect(jumpDestination(200, null, null)).toEqual({ kind: "hop" });
+  });
+
   it("targets the far edge when the child asks to cross a bridge", () => {
     const bridge = { id: "bridge", type: "پل", physicsShape: "platform", bounds: { x: 300, y: 400, width: 240, height: 20 } };
     expect(movementDestination(200, "right", 1000, bridge)).toMatchObject({ x: 568, direction: 1, crossesSurface: true });
     expect(movementDestination(650, "left", 1000, bridge)).toMatchObject({ x: 272, direction: -1, crossesSurface: true });
+  });
+
+  it("stops beside a solid drawing instead of walking into its middle", () => {
+    const box = { id: "box", type: "جعبه", physicsShape: "obstacle", bounds: { x: 400, y: 500, width: 80, height: 80 } };
+    expect(movementDestination(200, null, 900, box).x).toBe(364);
+    expect(movementDestination(700, null, 900, box).x).toBe(516);
+    const flower = { id: "flower", type: "flower", physicsShape: null, bounds: { x: 400, y: 500, width: 80, height: 80 } };
+    expect(movementDestination(200, null, 900, flower).x).toBe(440);
   });
 
   it("anchors the fishing line to the farthest rod point, not the hand", () => {

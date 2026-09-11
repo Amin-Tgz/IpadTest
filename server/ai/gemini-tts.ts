@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ServerConfig } from "../config.js";
+import { inspectSpeech, isCleanSpeech, trimSpeech, type SpeechInspection } from "./speech-guard.js";
 
 const responseSchema = z.object({
   candidates: z.array(z.object({
@@ -20,13 +21,13 @@ export interface SpeechAudio {
 
 export type VoicePreset = "curious" | "protesting" | "confused" | "effort" | "delighted" | "sad";
 
-const PRESET_STYLE: Record<VoicePreset, string> = {
-  curious: "کنجکاو، نرم و کمی پرسشگر",
-  protesting: "اعتراض‌آمیز و بامزه، با ریتم تند ولی مهربان",
-  confused: "مردد، با مکث کوتاه و لحن متعجب",
-  effort: "با انرژی و کمی تقلا در صدا",
-  delighted: "خوشحال، گرم و با جهش کوتاه در زیر و بمی",
-  sad: "آرام، دلخور و دوست‌داشتنی، بدون اغراق",
+const PRESET_TONE: Record<VoicePreset, string> = {
+  curious: "curious, soft and a little questioning",
+  protesting: "playfully protesting, quick but kind",
+  confused: "hesitant and puzzled, with a short pause",
+  effort: "energetic, with a little strain of effort",
+  delighted: "happy and warm, with a small lift in pitch",
+  sad: "gently sad and endearing, without exaggeration",
 };
 
 export interface SpeechGenerator {
@@ -70,6 +71,41 @@ export class GeminiSpeechGenerator implements SpeechGenerator {
     if (cached) return { bytes: cached, contentType: "audio/wav", cacheHit: true };
 
     const startedAt = Date.now();
+    let best: { pcm: Buffer; sampleRate: number; inspection: SpeechInspection } | null = null;
+    let takes = 0;
+    while (takes < MAX_TAKES) {
+      takes++;
+      const take = await this.requestTake(text, preset);
+      const inspection = inspectSpeech(take.pcm, take.sampleRate, text);
+      if (!best || takeBadness(inspection) < takeBadness(best.inspection)) best = { ...take, inspection };
+      if (isCleanSpeech(inspection)) break;
+      console.warn("[line-pal] tts_take_rejected", {
+        preset,
+        textLength: text.length,
+        take: takes,
+        spokenSeconds: speechSpanSeconds(inspection),
+        budgetSeconds: Math.round(inspection.budgetSeconds * 100) / 100,
+        repeated: inspection.repeatCutSeconds !== null,
+      });
+    }
+    const chosen = best!;
+    const wav = pcmToWav(trimSpeech(chosen.pcm, chosen.sampleRate, chosen.inspection), chosen.sampleRate);
+    this.cache.set(key, wav);
+    while (this.cache.size > 48) this.cache.delete(this.cache.keys().next().value!);
+    console.info("[line-pal] tts_generated", {
+      model: this.config.TTS_MODEL,
+      voice: this.config.TTS_VOICE,
+      preset,
+      textLength: text.length,
+      audioBytes: wav.length,
+      takes,
+      clean: isCleanSpeech(chosen.inspection),
+      elapsedMs: Date.now() - startedAt,
+    });
+    return { bytes: wav, contentType: "audio/wav", cacheHit: false };
+  }
+
+  private async requestTake(text: string, preset: VoicePreset): Promise<{ pcm: Buffer; sampleRate: number }> {
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: {
@@ -77,7 +113,7 @@ export class GeminiSpeechGenerator implements SpeechGenerator {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: `${this.config.TTS_STYLE} شخصیت یک قهرمان خطی مستقل و بازیگوش است؛ تقلید صدای شخصیت شناخته‌شده‌ای نباشد. با حالت ${PRESET_STYLE[preset]} بگو: ${text}` }] }],
+        contents: [{ parts: [{ text: speechDirection(this.config.TTS_STYLE, preset, text) }] }],
         generationConfig: {
           responseModalities: ["AUDIO"],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.config.TTS_VOICE } } },
@@ -94,17 +130,28 @@ export class GeminiSpeechGenerator implements SpeechGenerator {
       .find((part) => part.inlineData?.data)?.inlineData;
     if (!inline) throw new Error("Gemini TTS returned no audio data");
     const sampleRate = Number(/rate=(\d+)/i.exec(inline.mimeType)?.[1] ?? 24_000);
-    const wav = pcmToWav(Buffer.from(inline.data, "base64"), sampleRate);
-    this.cache.set(key, wav);
-    while (this.cache.size > 48) this.cache.delete(this.cache.keys().next().value!);
-    console.info("[line-pal] tts_generated", {
-      model: this.config.TTS_MODEL,
-      voice: this.config.TTS_VOICE,
-      preset,
-      textLength: text.length,
-      audioBytes: wav.length,
-      elapsedMs: Date.now() - startedAt,
-    });
-    return { bytes: wav, contentType: "audio/wav", cacheHit: false };
+    return { pcm: Buffer.from(inline.data, "base64"), sampleRate };
   }
+}
+
+const MAX_TAKES = 3;
+
+/**
+ * A short English director's note followed by the Persian line. Measured
+ * against the live model, Persian meta-instructions in the prompt made it read
+ * the line two or more times (up to 49s for one sentence); this form did not.
+ */
+export function speechDirection(style: string, preset: VoicePreset, text: string): string {
+  return `${style.trim().replace(/[.\s]+$/, "")}, ${PRESET_TONE[preset]}. Say it once: ${text}`;
+}
+
+function speechSpanSeconds(inspection: SpeechInspection): number {
+  const { phrases } = inspection;
+  if (phrases.length === 0) return 0;
+  return Math.round((phrases[phrases.length - 1].end - phrases[0].start) * 100) / 100;
+}
+
+function takeBadness(inspection: SpeechInspection): number {
+  if (isCleanSpeech(inspection)) return 0;
+  return 1 + Math.max(0, speechSpanSeconds(inspection) - inspection.budgetSeconds);
 }

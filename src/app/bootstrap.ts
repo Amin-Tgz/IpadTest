@@ -3,7 +3,7 @@ import { StrokeStore, type Stroke } from "../drawing/stroke-store.js";
 import { StrokeRenderer } from "../drawing/stroke-renderer.js";
 import { PointerInput, type PencilEvent } from "../drawing/pointer-input.js";
 import { IdMap } from "../drawing/id-map.js";
-import { Camera } from "../world/camera.js";
+import { Camera, verticalFollowTarget } from "../world/camera.js";
 import { GroundPath } from "../world/ground-path.js";
 import { SpeechBubble } from "../story/speech-bubble.js";
 import { GeneratedSpeech } from "../story/generated-speech.js";
@@ -33,7 +33,7 @@ import { ConversationHistory, type ConversationEntry } from "../story/conversati
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO } from "./constants.js";
 import { createDiagnostics } from "./diagnostics.js";
 import { PhaserWorldController } from "../world/phaser-world.js";
-import { farthestToolPoint, fishingHookPosition, movementDestination } from "../world/interaction-geometry.js";
+import { farthestToolPoint, fishingHookPosition, jumpDestination, movementDestination } from "../world/interaction-geometry.js";
 import { REPAIR_PARTS, SegmentRepairEditor, partColor, type RepairPart } from "../character/segment-repair.js";
 import { WorldEntityRegistry, type WorldEntity } from "../world/world-entity.js";
 import type { PhysicsShape } from "../world/phaser-world.js";
@@ -43,13 +43,12 @@ import { installLivingLineHero, LIVING_LINE_HERO_ID, type HeroVoicePreset } from
 import { QUESTS, type QuestState } from "../story/quest-engine.js";
 import { normalizeShoeCandidates, ShoeTutorialProgress } from "../story/shoe-tutorial.js";
 import { resolveObjectStrokes } from "../world/object-strokes.js";
-import {
-  createLadderRescuePlan,
-  MovableWorldObject,
-  RescueStateController,
-  rescueWaypointAt,
-  type LadderRescuePlan,
-} from "../world/ladder-rescue.js";
+import { MovableWorldObject } from "../world/ladder-rescue.js";
+import { ParticleFXManager } from "./particles.js";
+import { UiOverlayManager } from "./ui-overlay.js";
+import { RescueCoordinator } from "../world/rescue-coordinator.js";
+import { inferredPhysicsShape, resolveMovementIntent } from "../ai/movement-intent.js";
+import { drawnSurface, type DrawnSurface } from "../world/physics-geometry.js";
 
 const appEl = (() => {
   const el = document.getElementById("app");
@@ -106,6 +105,7 @@ const storage = createSessionStorage();
 const worldEntities = new WorldEntityRegistry();
 const conversation = new ConversationHistory();
 const sfx = new SfxEngine(() => speech.getContext(), (event, detail) => diagnostics.info(event, detail));
+const particles = new ParticleFXManager();
 
 const getViewport = () => {
   const { viewportWidth: width, viewportHeight: height } = appState.get();
@@ -117,6 +117,22 @@ const spike = new AnalysisSpike(store, camera, getViewport, () => groundPath, bu
 const animController = new AnimationController();
 const quest = new QuestEngine();
 const shoeProgress = new ShoeTutorialProgress();
+
+const rescue = new RescueCoordinator({
+  store,
+  groundPath: () => groundPath,
+  phaserWorld: () => phaserWorld,
+  worldEntities,
+  conversation,
+  animController,
+  getViewport,
+  diagnostics,
+  speakStoryText: (b, s, e, a, m) => speakStoryText(b, s, e as HeroVoicePreset, a, m as MotionId),
+  onRescueComplete: () => {
+    beginAwaitingDrawing("free_draw", true);
+    scheduleSave();
+  },
+});
 
 let rigRuntime: RigRuntime | null = null;
 let riggedStrokeIds = new Set<string>();
@@ -141,32 +157,6 @@ let navigationTravel = 0;
 let navigationLastX: number | null = null;
 let lastFootstepAt = 0;
 let lastDrawSfxAt = 0;
-let squashUntil = 0;
-let squashScaleX = 1;
-let squashScaleY = 1;
-
-function triggerSquash(sx: number, sy: number, durationMs: number, nowMs: number): void {
-  squashScaleX = sx;
-  squashScaleY = sy;
-  squashUntil = nowMs + durationMs;
-}
-
-type DustParticle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number };
-const dustParticles: DustParticle[] = [];
-function spawnDust(x: number, y: number, count = 6): void {
-  for (let i = 0; i < count; i++) {
-    const angle = Math.PI + (Math.random() - 0.5) * 1.4;
-    const speed = 1.2 + Math.random() * 2.8;
-    dustParticles.push({
-      x,
-      y,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed - Math.random() * 1.5,
-      life: 1,
-      maxLife: 1,
-    });
-  }
-}
 
 let lastActivityAt = performance.now();
 const pencilTrail: Array<{ x: number; y: number; t: number }> = [];
@@ -181,12 +171,6 @@ let pendingDrawingReaction: {
 const navigationMemories = new Map<string, string>();
 let introBumpStartedAt: number | null = null;
 let introTimer: number | null = null;
-const rescueState = new RescueStateController();
-let rescuePlan: LadderRescuePlan | null = null;
-let rescueStartedAt: number | null = null;
-let rescueLadderId: string | null = null;
-const movableObjects = new Map<string, MovableWorldObject>();
-const movableStrokeIds = new Set<string>();
 let fishingLine: { waterPoint: { x: number; y: number }; pullStartedAt: number | null } | null = null;
 
 function activateRig(rig: Rig, playSpawn = true): void {
@@ -400,14 +384,21 @@ async function restoreSession(): Promise<boolean> {
     attachments = savedQuest.attachments ?? [];
     for (const entity of savedQuest.worldEntities ?? []) {
       worldEntities.upsert(entity);
-      if (entity.physicsShape) phaserWorld?.addEntity({ id: entity.id, shape: entity.physicsShape, ...entity.bounds });
+      if (entity.physicsShape) {
+        phaserWorld?.addEntity({
+          id: entity.id,
+          shape: entity.physicsShape,
+          ...entity.bounds,
+          surface: surfaceFromStrokes(entity.sourceStrokeIds, entity.bounds),
+        });
+      }
       if (entity.transform && entity.sourceStrokeIds.length > 0) {
         const source = entity.sourceStrokeIds.map((id) => store.byId(id)).filter((stroke): stroke is Stroke => Boolean(stroke));
         if (source.length > 0) {
           const movable = new MovableWorldObject(entity.id, source, { x: entity.transform.originX, y: entity.transform.originY });
           movable.setTransform(entity.transform);
-          movableObjects.set(entity.id, movable);
-          entity.sourceStrokeIds.forEach((id) => movableStrokeIds.add(id));
+          rescue.movableObjects.set(entity.id, movable);
+          entity.sourceStrokeIds.forEach((id) => rescue.movableStrokeIds.add(id));
         }
       }
     }
@@ -428,6 +419,9 @@ async function restoreSession(): Promise<boolean> {
       beginAwaitingDrawing("draw_fishing_tool", false);
     } else if (restoredState === "ENDING") {
       quest.restore(restoredState);
+      // The fishing story is over: the world is plain ground again.
+      pond = null;
+      fishingLine = null;
       startFreePlay(false);
     } else if (restoredState === "EQUIP_SHOES") {
       quest.restore("AWAIT_SHOES");
@@ -539,6 +533,7 @@ function jointsInImageCoords(): Array<{ id: string; x: number; y: number }> {
   const mapping = {
     scale: 1024 / Math.max(viewport.width, viewport.height),
     cameraX: camera.state.x,
+    cameraY: camera.state.y,
     width: 0,
     height: 0,
   };
@@ -596,7 +591,7 @@ async function resolveDrawingAttempt(): Promise<void> {
 
     const root = rigRuntime.restJoint("root");
     const edges = root ? groundPath.nearestIntactEdges(root.x) : { left: null, right: null };
-    const worldSummary = `The character root is at (${Math.round(root?.x ?? 0)}, ${Math.round(root?.y ?? 0)}). Rescue phase: ${rescueState.phase}. The white ground line is normally continuous. Ground erased: ${groundPath.erased}. Nearest intact edges: left=${edges.left === null ? "none" : Math.round(edges.left)}, right=${edges.right === null ? "none" : Math.round(edges.right)}. Nearby entities: ${worldEntities.summary() || "none"}.`.slice(0, 400);
+    const worldSummary = `The character root is at (${Math.round(root?.x ?? 0)}, ${Math.round(root?.y ?? 0)}). Rescue phase: ${rescue.phase}. The white ground line is normally continuous. Ground erased: ${groundPath.erased}. Nearest intact edges: left=${edges.left === null ? "none" : Math.round(edges.left)}, right=${edges.right === null ? "none" : Math.round(edges.right)}. Nearby entities: ${worldEntities.summary() || "none"}.`.slice(0, 400);
 
     const result = await analyzeDrawing(
       full.dataUrl,
@@ -626,7 +621,7 @@ async function resolveDrawingAttempt(): Promise<void> {
         : "دیدمش! بذار ببینم باهاش چی کار می‌شه کرد…";
       const spokenText = looksPersian(analysis.reaction.spoken) ? analysis.reaction.spoken : bubbleText;
       if (goalId === "rescue_ladder") {
-        if (!startLadderRescue(analysis, registered.entityIds, reviewSourceStrokeIds)) {
+        if (!rescue.startLadderRescue(analysis, registered.entityIds, reviewSourceStrokeIds, rigRuntime)) {
           const hint = "هوم... این یکی نردبان نیست؛ یک نردبان پله‌پله برام بکش.";
           speakStoryText(hint, hint, "confused", undefined, "confused");
           beginAwaitingRescue(false);
@@ -736,12 +731,17 @@ function walkToDrawingReaction(analysis: DrawingAnalysis, entityIds: string[], b
     finishDrawingReaction(analysis.action ?? null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
     return;
   }
-  if (analysis.action?.type === "move" || analysis.action?.type === "climb") {
-    if (!executeAIAction(analysis.action, entityIds)) {
+  const action = resolveMovementIntent(analysis.objects, analysis.action ?? null);
+  if (action !== (analysis.action ?? null)) {
+    diagnostics.info("movement_intent_resolved", { provided: analysis.action ?? null, resolved: action });
+  }
+  if (action?.type === "move" || action?.type === "climb" || action?.type === "jump") {
+    if (!executeAIAction(action, entityIds)) {
       finishDrawingReaction(null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
       return;
     }
-    const actionId = phaserWorld?.navigationSnapshot().actionId;
+    // Only a started navigation completes later; a jump in place is already done.
+    const actionId = phaserWorld?.isNavigating ? phaserWorld.navigationSnapshot().actionId : null;
     if (!actionId) {
       finishDrawingReaction(null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
       return;
@@ -763,18 +763,18 @@ function walkToDrawingReaction(analysis: DrawingAnalysis, entityIds: string[], b
   const clearance = Math.max(42, 46 * rigRuntime.proportionScale);
   const targetX = root && root.x <= leftEdge ? leftEdge - clearance : rightEdge + clearance;
   if (!root || !Number.isFinite(targetX) || Math.abs(root.x - targetX) < 12) {
-    finishDrawingReaction(analysis.action ?? null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
+    finishDrawingReaction(action, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
     return;
   }
   ensureGroundAhead();
   const navigation = phaserWorld?.walkTo(targetX);
   if (!navigation?.started) {
     diagnostics.info("drawing_reaction_walk_not_started", { reason: navigation?.reason ?? "physics_world_unavailable", targetX });
-    finishDrawingReaction(analysis.action ?? null, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
+    finishDrawingReaction(action, entityIds, analysis.reaction.emotion, bubbleText, spokenText);
     return;
   }
   pendingDrawingReaction = {
-    action: analysis.action ?? null,
+    action,
     entityIds,
     emotion: analysis.reaction.emotion,
     bubble: bubbleText,
@@ -787,81 +787,12 @@ function walkToDrawingReaction(analysis: DrawingAnalysis, entityIds: string[], b
   diagnostics.info("drawing_reaction_walk_started", { actionId: navigation.actionId, targetX, leftEdge, rightEdge });
 }
 
-function inferredPhysicsShape(object: DrawingAnalysis["objects"][number]): PhysicsShape | null {
-  if (object.physicsShape && object.physicsShape !== "none") return object.physicsShape;
-  const semantic = `${object.type} ${object.affordances.join(" ")}`.toLowerCase();
-  if (/ladder|نردبان/.test(semantic)) return "ladder";
-  if (/stair|step|پله/.test(semantic)) return "stairs";
-  if (/slope|ramp|شیب/.test(semantic)) return "slope";
-  if (/platform|bridge|surface|پل|سکو/.test(semantic)) return "platform";
-  if (/box|ball|rock|crate|توپ|سنگ|جعبه/.test(semantic)) return "dynamic";
-  if (/wall|obstacle|barrier|دیوار|مانع/.test(semantic)) return "obstacle";
-  return null;
-}
-
-function isLadderObject(object: DrawingAnalysis["objects"][number]): boolean {
-  const semantic = `${object.type} ${object.affordances.join(" ")}`.toLowerCase();
-  return object.physicsShape === "ladder" || /ladder|نردبان/.test(semantic);
-}
-
-function startLadderRescue(
-  analysis: DrawingAnalysis,
-  entityIds: string[],
-  reviewSourceStrokeIds: ReadonlySet<string>,
-): boolean {
-  if (!rigRuntime || rescueState.phase !== "FALLEN_WAITING_RESCUE") return false;
-  let ladderIndex = analysis.objects.findIndex(isLadderObject);
-  if (ladderIndex < 0 && analysis.objects.length > 0) {
-    const fallback = analysis.objects.findIndex((object) => {
-      const semantic = `${object.type} ${object.affordances.join(" ")}`.toLowerCase();
-      return /ladder|stairs|platform|bridge|نردبان|پله|پل/.test(semantic) || object.physicsShape === "stairs" || object.physicsShape === "platform" || object.physicsShape === "slope";
-    });
-    if (fallback >= 0) ladderIndex = fallback;
-    else ladderIndex = 0;
-    diagnostics.info("ladder_rescue_fallback", { chosenIndex: ladderIndex, objects: analysis.objects.map((o) => o.type) });
-  }
-  if (ladderIndex < 0) return false;
-  const entityId = entityIds[ladderIndex];
-  const entity = entityId ? worldEntities.get(entityId) : null;
-  if (!entity) return false;
-  const sourceIds = entity.sourceStrokeIds.length > 0 ? entity.sourceStrokeIds : [...reviewSourceStrokeIds];
-  const source = sourceIds.map((id) => store.byId(id)).filter((stroke): stroke is Stroke => Boolean(stroke?.active));
-  if (source.length === 0) return false;
-  worldEntities.setSourceStrokeIds(entityId, sourceIds);
-  const ladder = new MovableWorldObject(entityId, source);
-  const root = rigRuntime.jointWorld("root");
-  if (!root) return false;
-  const edges = groundPath.nearestIntactEdges(root.x);
-  const baselineY = Math.round(getViewport().height * BASE_LINE_Y_RATIO);
-  let plan: LadderRescuePlan;
-  try {
-    plan = createLadderRescuePlan({
-      hero: root,
-      baselineY,
-      leftEdge: edges.left,
-      rightEdge: edges.right,
-      ladder,
-    });
-  } catch (error) {
-    diagnostics.error("ladder_rescue_plan_failed", error);
-    return false;
-  }
-  phaserWorld?.removeEntity(entityId);
-  if (!phaserWorld?.beginRescue()) return false;
-  sourceIds.forEach((id) => movableStrokeIds.add(id));
-  movableObjects.set(entityId, ladder);
-  rescueLadderId = entityId;
-  rescuePlan = plan;
-  rescueStartedAt = performance.now();
-  if (!rescueState.begin()) return false;
-  appState.setMode("rescuing");
-  groundChangePending = false;
-  animController.playById("ladder_pickup");
-  const line = "خب مشتی، نردبان رو می‌گیرم؛ محکم نگهش دار!";
-  speakStoryText(line, line, "effort", undefined, "ladder_pickup");
-  diagnostics.info("ladder_rescue_started", { entityId, edge: plan.edge, waypoints: plan.waypoints.length });
-  refreshReviewControls();
-  return true;
+function surfaceFromStrokes(strokeIds: readonly string[], bounds: WorldEntity["bounds"]): DrawnSurface | undefined {
+  const strokes = strokeIds
+    .map((id) => store.byId(id))
+    .filter((stroke): stroke is Stroke => Boolean(stroke?.active))
+    .map((stroke) => stroke.points);
+  return drawnSurface(strokes, bounds) ?? undefined;
 }
 
 function registerWorldObjects(
@@ -899,14 +830,15 @@ function registerWorldObjects(
         shape: physicsShape,
         ...bounds,
         angleDegrees: object.orientationDegrees,
+        surface: surfaceFromStrokes(perObject[index], bounds),
       });
       if (physicsShape === "dynamic" && perObject[index].length > 0) {
         const source = perObject[index].map((sid) => store.byId(sid)).filter((s): s is Stroke => Boolean(s && s.active));
         if (source.length > 0) {
           const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
           const movable = new MovableWorldObject(id, source, center);
-          movableObjects.set(id, movable);
-          perObject[index].forEach((sid) => movableStrokeIds.add(sid));
+          rescue.movableObjects.set(id, movable);
+          perObject[index].forEach((sid) => rescue.movableStrokeIds.add(sid));
         }
       }
     }
@@ -972,14 +904,39 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
       conversation.append("system", "action", `Hero started the requested move${target ? ` toward ${target.type} (${target.id})` : ""}.`);
       return true;
     }
-    case "jump":
-      if (!phaserWorld?.jump()) {
-        diagnostics.info("movement_not_started", { action: action.type, reason: "character_not_grounded" });
+    case "jump": {
+      const root = rigRuntime.jointWorld("root");
+      const destination = jumpDestination(
+        root?.x ?? 0,
+        action.direction,
+        target ? { bounds: target.bounds, physical: target.physicsShape !== null } : null,
+      );
+      let landingX: number | null = null;
+      if (destination.kind === "toward") landingX = destination.x;
+      else if (destination.kind === "drop") {
+        landingX = phaserWorld?.dropLandingX(destination.direction)
+          ?? (destination.direction !== null && root ? root.x + destination.direction * 180 : null);
+      }
+      if (landingX === null) {
+        if (!phaserWorld?.jump()) {
+          diagnostics.info("movement_not_started", { action: action.type, reason: "character_not_grounded" });
+          return false;
+        }
+        animController.playById("happy");
+        conversation.append("system", "action", "Hero jumped in place after the child's request.");
+        return true;
+      }
+      ensureGroundAhead();
+      const result = phaserWorld?.jumpToward(landingX, target?.id ?? null);
+      if (!result?.started) {
+        diagnostics.info("movement_not_started", { action: action.type, reason: result?.reason ?? "physics_world_unavailable", landingX });
         return false;
       }
       animController.playById("happy");
-      conversation.append("system", "action", "Hero jumped after the child's request.");
+      navigationMemories.set(result.actionId, `jump ${landingX < (root?.x ?? 0) ? "left" : "right"} and land near x=${Math.round(landingX)}`);
+      conversation.append("system", "action", `Hero jumped toward x=${Math.round(landingX)} after the child's request.`);
       return true;
+    }
     case "climb": {
       const root = rigRuntime.jointWorld("root");
       const direction = target && root && target.bounds.x < root.x ? -1 : 1;
@@ -992,8 +949,8 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
         return false;
       }
       animController.playById("walk");
-      navigationMemories.set(result.actionId, `climb past ${target?.type ?? "the requested obstacle"}`);
-      conversation.append("system", "action", `Hero started climbing ${target?.type ?? "the requested obstacle"}.`);
+      navigationMemories.set(result.actionId, `climb to the top of ${target?.type ?? "the requested obstacle"}`);
+      conversation.append("system", "action", `Hero started climbing ${target?.type ?? "the requested obstacle"} the child drew.`);
       return true;
     }
     case "equip":
@@ -1189,8 +1146,28 @@ quest.onCommand = (command: StoryCommand) => {
   scheduleSave();
 };
 
+function putAwayHeldTools(): void {
+  const tools = attachments.filter((attachment) => attachment.kind === "held_tool");
+  if (tools.length === 0) return;
+  attachments = attachments.filter((attachment) => attachment.kind !== "held_tool");
+  const toolStrokeIds = new Set(tools.flatMap((tool) => tool.sourceStrokeIds));
+  toolStrokeIds.forEach((id) => store.deactivate(id));
+  worldEntities.removeByStrokeIds(toolStrokeIds).forEach((id) => phaserWorld?.removeEntity(id));
+  const hand = rigRuntime?.jointWorld("right_hand");
+  if (hand) particles.spawnDust(hand.x, hand.y, 8);
+  conversation.append("system", "action", "The fishing is over: the pond is gone and the hero put the fishing tool away; the shoes stay on.");
+  diagnostics.info("held_tools_put_away", { count: tools.length, strokes: toolStrokeIds.size });
+  scheduleSave();
+}
+
 function showEnding(): void {
   appState.setMode("ending");
+  // The fish is caught and the story ends; hand the world back to the child
+  // on plain ground, so the lake and the rod's hook/line are no longer drawn.
+  pond = null;
+  fishingLine = null;
+  putAwayHeldTools();
+  if (rigRuntime) rigRuntime.clearPointing();
   const el = document.createElement("div");
   el.style.cssText = [
     "position:absolute",
@@ -1216,79 +1193,6 @@ function showEnding(): void {
 }
 
 const resetEl = document.createElement("button");
-resetEl.style.cssText = [
-  "position:absolute",
-  "z-index:45",
-  "top:max(14px, env(safe-area-inset-top))",
-  "left:max(14px, env(safe-area-inset-left))",
-  "width:72px",
-  "height:68px",
-  "border-radius:16px",
-  "border:2px solid rgba(247,245,238,0.75)",
-  "background:#103B46",
-  "color:#F7F5EE",
-  "display:flex",
-  "flex-direction:column",
-  "align-items:center",
-  "justify-content:center",
-  "gap:3px",
-  "opacity:0.92",
-  "transition:opacity 200ms",
-].join(";");
-resetEl.innerHTML = `${controlIcon("restart")}<span style="font:11px system-ui">شروع دوباره</span>`;
-resetEl.title = "شروع دوباره";
-resetEl.addEventListener("click", () => {
-  storyBeats.cancel("restart");
-  if (storage) void storage.clearSession();
-  window.location.reload();
-});
-appEl.appendChild(resetEl);
-
-if (speechDebugEnabled) {
-  const speechDebugEl = document.createElement("button");
-  speechDebugEl.textContent = "🔊 تست صدا";
-  speechDebugEl.title = "تست مستقیم صدای مرورگر";
-  speechDebugEl.style.cssText = [
-    "position:absolute", "z-index:60", "top:max(14px, env(safe-area-inset-top))", "right:14px",
-    "min-height:52px", "padding:10px 18px", "border-radius:14px", "border:2px solid #D8F6FF",
-    "background:#103B46", "color:#F7F5EE", "font:700 16px system-ui", "direction:rtl",
-  ].join(";");
-  speechDebugEl.addEventListener("click", () => {
-    diagnostics.info("speech_debug_button_clicked", speech.snapshot());
-    void speech.play({ text: "سلام! این صدای تازهٔ من است. آماده‌ام نقاشی‌ات را ببینم!", preset: "delighted" }).then((result) => {
-      diagnostics.info("speech_debug_completed", speech.snapshot());
-      diagnostics.info("speech_debug_result", result);
-    });
-  });
-  appEl.appendChild(speechDebugEl);
-}
-
-function controlIcon(kind: "restart" | "undo" | "eraser"): string {
-  const paths = {
-    restart: '<path d="M20 7a8 8 0 1 0 2 8"/><path d="M20 3v4h-4"/>',
-    undo: '<path d="M9 8 4 12l5 4"/><path d="M5 12h9a6 6 0 0 1 6 6"/>',
-    eraser: '<path d="m7 18-3-3 9-9a2 2 0 0 1 3 0l2 2a2 2 0 0 1 0 3l-7 7Z"/><path d="M10 9l5 5M7 18h13"/>',
-  };
-  return `<svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind]}</svg>`;
-}
-
-function makeInkControl(kind: "undo" | "eraser", label: string, title: string, top: string): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.innerHTML = `${controlIcon(kind)}<span style="font:11px system-ui">${label}</span>`;
-  button.title = title;
-  button.style.cssText = [
-    "position:absolute", "z-index:45", `top:${top}`, "left:max(14px, env(safe-area-inset-left))",
-    "width:72px", "height:68px", "padding:5px", "border-radius:16px",
-    "border:2px solid rgba(247,245,238,0.75)", "background:#103B46",
-    "color:#F7F5EE", "display:flex", "flex-direction:column", "align-items:center",
-    "justify-content:center", "gap:3px", "touch-action:manipulation", "transition:opacity 180ms",
-  ].join(";");
-  appEl.appendChild(button);
-  return button;
-}
-
-const undoEl = makeInkControl("undo", "برگشت", "پاک کردن آخرین خط", "90px");
-const eraserEl = makeInkControl("eraser", "پاک‌کن", "پاک‌کن: بخش لمس‌شدهٔ خط را پاک کن", "166px");
 let activeInkTool: "pen" | "eraser" = "pen";
 
 function canEditInk(): boolean {
@@ -1296,200 +1200,25 @@ function canEditInk(): boolean {
   return mode === "awaiting" || mode === "fallen_waiting_rescue";
 }
 
-function hideRevive(): void {
-  reviveEl.style.opacity = "0";
-  reviveEl.style.pointerEvents = "none";
+function setInkTool(tool: "pen" | "eraser"): void {
+  activeInkTool = tool;
+  pointer.setTool(tool);
+  ui.setTool(tool);
+  diagnostics.info("ink_tool_changed", { tool });
 }
 
-function hideReview(): void {
-  reviewEl.hidden = true;
-  reviewEl.style.opacity = "0";
-  reviewEl.style.pointerEvents = "none";
-  reviewEl.tabIndex = -1;
-  reviewEl.setAttribute("aria-hidden", "true");
-}
-
-function hideSampleDemo(): void {
-  sampleDemoEl.style.opacity = "0";
-  sampleDemoEl.style.pointerEvents = "none";
-}
-
-function hideStageButton(): void {
-  stageButton.style.opacity = "0";
-  stageButton.style.pointerEvents = "none";
-}
-
-const stageTitleEl = document.createElement("div");
-stageTitleEl.style.cssText = [
-  "position:absolute",
-  "z-index:32",
-  "top:max(18px, env(safe-area-inset-top))",
-  "left:50%",
-  "transform:translateX(-50%)",
-  "color:#D8F6FF",
-  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
-  "font-size:15px",
-  "background:rgba(16,59,70,0.85)",
-  "padding:8px 18px",
-  "border-radius:999px",
-  "border:1px solid rgba(216,246,255,0.3)",
-  "direction:rtl",
-  "opacity:0",
-  "transition:opacity 300ms",
-  "pointer-events:none",
-].join(";");
-appEl.appendChild(stageTitleEl);
-
-const stageButton = document.createElement("button");
-stageButton.style.cssText = [
-  "position:absolute",
-  "z-index:35",
-  "bottom:max(28px, env(safe-area-inset-bottom))",
-  "left:50%",
-  "transform:translateX(-50%)",
-  "color:#103B46",
-  "background:#F7F5EE",
-  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
-  "font-size:18.4px",
-  "font-weight:600",
-  "padding:12px 35px",
-  "min-height:56px",
-  "border-radius:999px",
-  "border:none",
-  "direction:rtl",
-  "opacity:0",
-  "transition:opacity 300ms",
-  "pointer-events:none",
-  "box-shadow:0 6px 20px rgba(0,0,0,0.3)",
-].join(";");
-appEl.appendChild(stageButton);
-
-const reviveEl = document.createElement("button");
-reviveEl.style.cssText = [
-  "position:absolute",
-  "z-index:35",
-  "bottom:max(28px, env(safe-area-inset-bottom))",
-  "left:50%",
-  "transform:translateX(-50%)",
-  "color:#F7F5EE",
-  "background:rgba(16,59,70,0.9)",
-  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
-  "font-size:18.4px",
-  "padding:12px 30px",
-  "min-height:56px",
-  "border-radius:999px",
-  "border:1px solid rgba(247,245,238,0.4)",
-  "direction:rtl",
-  "opacity:0",
-  "transition:opacity 300ms",
-  "pointer-events:none",
-].join(";");
-reviveEl.textContent = "زنده‌اش کن";
-appEl.appendChild(reviveEl);
-
-const reviewEl = document.createElement("button");
-reviewEl.style.cssText = [
-  "position:absolute",
-  "z-index:35",
-  "bottom:max(28px, env(safe-area-inset-bottom))",
-  "left:50%",
-  "transform:translateX(-50%)",
-  "color:#103B46",
-  "background:#D8F6FF",
-  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
-  "font-size:18.4px",
-  "font-weight:700",
-  "padding:12px 35px",
-  "min-height:56px",
-  "border-radius:999px",
-  "border:2px solid rgba(247,245,238,0.72)",
-  "direction:rtl",
-  "opacity:0",
-  "transition:opacity 220ms, transform 160ms",
-  "pointer-events:none",
-  "touch-action:manipulation",
-  "box-shadow:0 6px 20px rgba(0,0,0,0.3)",
-].join(";");
-reviewEl.textContent = "▶ ببین نقاشی‌مو";
-reviewEl.title = "حالا نقاشی من را ببین";
-appEl.appendChild(reviewEl);
-hideReview();
-
-const repairEl = document.createElement("button");
-repairEl.style.cssText = [
-  "position:absolute", "z-index:35", "top:max(18px, env(safe-area-inset-top))",
-  "right:max(18px, env(safe-area-inset-right))", "padding:10px 16px", "min-height:48px",
-  "border-radius:999px", "border:1px solid rgba(216,246,255,.45)", "background:#103B46",
-  "color:#D8F6FF", "font:15px system-ui", "direction:rtl", "opacity:0", "pointer-events:none",
-  "touch-action:manipulation", "transition:opacity 220ms",
-].join(";");
-repairEl.textContent = "اصلاح بخش‌های بدن";
-appEl.appendChild(repairEl);
-
-const repairPaletteEl = document.createElement("div");
-repairPaletteEl.style.cssText = [
-  "position:absolute", "z-index:50", "top:max(14px, env(safe-area-inset-top))", "left:50%",
-  "transform:translateX(-50%)", "display:none", "gap:6px", "align-items:center", "flex-wrap:wrap",
-  "justify-content:center", "max-width:calc(100vw - 180px)", "padding:8px", "border-radius:18px",
-  "background:rgba(5,24,30,.9)", "direction:rtl",
-].join(";");
-const repairLabels: Record<RepairPart, string> = {
-  head: "سر", torso: "بدن", left_arm: "بازوی چپ", right_arm: "بازوی راست",
-  left_hand: "دست چپ", right_hand: "دست راست", left_fingers: "انگشت‌های چپ", right_fingers: "انگشت‌های راست",
-  left_leg: "پای چپ", right_leg: "پای راست", left_foot: "کف پای چپ", right_foot: "کف پای راست",
-  left_eyebrow: "ابروی چپ", right_eyebrow: "ابروی راست",
-};
-const repairPartButtons = new Map<RepairPart, HTMLButtonElement>();
-for (const part of REPAIR_PARTS) {
-  const button = document.createElement("button");
-  button.textContent = repairLabels[part];
-  button.style.cssText = `min-height:44px;padding:8px 12px;border-radius:12px;border:3px solid ${partColor(part)};background:#103B46;color:#F7F5EE;font:14px system-ui;touch-action:manipulation`;
-  button.addEventListener("click", () => {
-    segmentRepair?.previewPart(part);
-    repairPartButtons.forEach((item, key) => {
-      item.style.background = key === part ? "#D8F6FF" : "#103B46";
-      item.style.color = key === part ? "#103B46" : "#F7F5EE";
-    });
-  });
-  repairPartButtons.set(part, button);
-  repairPaletteEl.appendChild(button);
-}
-const repairDoneEl = document.createElement("button");
-repairDoneEl.textContent = "تمام شد";
-repairDoneEl.style.cssText = "min-height:44px;padding:8px 16px;border-radius:12px;border:0;background:#F7F5EE;color:#103B46;font:700 14px system-ui;touch-action:manipulation";
-repairPaletteEl.appendChild(repairDoneEl);
-appEl.appendChild(repairPaletteEl);
-
-const sampleDemoEl = document.createElement("button");
-sampleDemoEl.style.cssText = [
-  "position:absolute",
-  "z-index:35",
-  "bottom:max(28px, env(safe-area-inset-bottom))",
-  "left:50%",
-  "transform:translateX(-50%)",
-  "color:rgba(247,245,238,0.75)",
-  "background:transparent",
-  "font-family:system-ui,'Segoe UI',Tahoma,sans-serif",
-  "font-size:13px",
-  "padding:6px 16px",
-  "border-radius:999px",
-  "border:1px solid rgba(247,245,238,0.2)",
-  "direction:rtl",
-  "opacity:0",
-  "pointer-events:none",
-  "transition:opacity 300ms",
-].join(";");
-sampleDemoEl.textContent = "تحلیل شخصیت نمونه";
-appEl.appendChild(sampleDemoEl);
-if (characterDebugEnabled) {
-  sampleDemoEl.style.opacity = "1";
-  sampleDemoEl.style.pointerEvents = "auto";
-} else {
-  stageButton.hidden = true;
-  reviveEl.hidden = true;
-  repairEl.hidden = true;
-  repairPaletteEl.hidden = true;
-  sampleDemoEl.hidden = true;
+function performUndo(): void {
+  if (appState.get().mode === "segmenting" && segmentRepair) {
+    if (segmentRepair.undo()) diagnostics.info("body_part_correction_undone");
+    return;
+  }
+  if (!canEditInk()) return;
+  const undone = store.undo((stroke) => stroke.entityId === null);
+  if (!undone) return;
+  diagnostics.info("stroke_undone", { id: undone.id });
+  ui.hideRevive();
+  scheduleSave();
+  refreshReviewControls();
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -1521,11 +1250,11 @@ function enterEditorMode(box: { x: number; y: number; width: number; height: num
   });
   editor.begin(includeSample ? box : characterGuideBox(), manifest, filter);
   editor.nextStage();
-  hideRevive();
-  hideSampleDemo();
-  stageButton.textContent = "ادامه";
-  stageButton.style.opacity = "1";
-  stageButton.style.pointerEvents = "auto";
+  ui.hideRevive();
+  ui.hideSampleDemo();
+  ui.stageButton.textContent = "ادامه";
+  ui.stageButton.style.opacity = "1";
+  ui.stageButton.style.pointerEvents = "auto";
 }
 
 function startAnalysis(includeSample: boolean): void {
@@ -1542,34 +1271,20 @@ function finalizeCharacter(): void {
     return;
   }
   appState.setMode("live");
-  hideStageButton();
-  stageTitleEl.style.opacity = "0";
+  ui.hideStageButton();
+  ui.stageTitleEl.style.opacity = "0";
   replaceCharacter(manifest, true);
-  // Free drawing is enabled immediately. If the child starts a balloon while
-  // the spawn animation is still playing, that ink remains after this checkpoint.
   beginAwaitingDrawing("free_draw");
   if (storage) void storage.saveManifest(manifest);
   console.log("[line-pal] character manifest:", JSON.stringify(manifest, null, 2));
   speakStoryText("اوه! پس تو این شکلی…");
 }
 
-reviveEl.addEventListener("click", () => startAnalysis(false));
-sampleDemoEl.addEventListener("click", () => {
-  if (introTimer !== null) window.clearTimeout(introTimer);
-  introTimer = null;
-  introBumpStartedAt = null;
-  loadSampleDemo();
-  startAnalysis(true);
-});
-stageButton.addEventListener("click", () => {
-  editor.nextStage();
-});
-
 editor.onStageChange = (stage) => {
-  stageTitleEl.textContent = STAGE_LABELS[stage];
-  stageButton.textContent = stage === "joints" ? "زنده‌اش کن" : "ادامه";
+  ui.stageTitleEl.textContent = STAGE_LABELS[stage];
+  ui.stageButton.textContent = stage === "joints" ? "زنده‌اش کن" : "ادامه";
   if (stage === "done") {
-    hideStageButton();
+    ui.hideStageButton();
     finalizeCharacter();
   }
 };
@@ -1579,61 +1294,105 @@ function hasPendingReview(): boolean {
 }
 
 function refreshReviewControls(): void {
-  hideRevive();
-  hideReview();
+  ui.hideRevive();
+  ui.hideReview();
   const mode = appState.get().mode;
   const canRepair = mode === "awaiting" && activeManifest !== null && !analysisInFlight;
-  repairEl.style.opacity = canRepair ? "1" : "0";
-  repairEl.style.pointerEvents = canRepair ? "auto" : "none";
+  ui.repairEl.style.opacity = canRepair ? "1" : "0";
+  ui.repairEl.style.pointerEvents = canRepair ? "auto" : "none";
   if (mode === "intro" && spike.status !== "analyzing" && spike.status !== "done" && spike.userHasDrawn()) {
-    reviveEl.style.opacity = "1";
-    reviveEl.style.pointerEvents = "auto";
+    ui.reviveEl.style.opacity = "1";
+    ui.reviveEl.style.pointerEvents = "auto";
   } else if ((mode === "awaiting" || mode === "fallen_waiting_rescue") && !analysisInFlight && !pendingDrawingReaction && hasPendingReview()) {
-    reviewEl.hidden = false;
-    reviewEl.style.opacity = "1";
-    reviewEl.style.pointerEvents = "auto";
-    reviewEl.tabIndex = 0;
-    reviewEl.setAttribute("aria-hidden", "false");
+    ui.showReview();
     diagnostics.info("drawing_review_button_shown", { checkpoint, strokeCount: store.count(), groundChangePending });
   }
 }
 
-reviewEl.addEventListener("click", () => {
+function onReviewClick(): void {
   const mode = appState.get().mode;
   if (analysisInFlight || pendingDrawingReaction || (mode !== "awaiting" && mode !== "fallen_waiting_rescue") || !hasPendingReview()) return;
-  hideReview();
+  ui.hideReview();
   void resolveDrawingAttempt();
-});
+}
 
-repairEl.addEventListener("click", () => {
+function onRepairClick(): void {
   if (!activeManifest || analysisInFlight) return;
   segmentRepair = new SegmentRepairEditor(structuredClone(activeManifest));
   appState.setMode("segmenting");
-  hideReview();
-  repairEl.style.opacity = "0";
-  repairEl.style.pointerEvents = "none";
-  repairPaletteEl.style.display = "flex";
-  repairPartButtons.get("torso")?.click();
-});
+  ui.hideReview();
+  ui.repairEl.style.opacity = "0";
+  ui.repairEl.style.pointerEvents = "none";
+  ui.repairPaletteEl.style.display = "flex";
+  ui.repairPartButtons.get("torso")?.click();
+}
 
-repairDoneEl.addEventListener("click", () => {
+function onRepairDoneClick(): void {
   if (!segmentRepair) return;
   activeManifest = segmentRepair.manifest;
   activateRig(buildRig(activeManifest, store), false);
   if (storage) void storage.saveManifest(activeManifest);
   segmentRepair = null;
-  repairPaletteEl.style.display = "none";
+  ui.repairPaletteEl.style.display = "none";
   appState.setMode("awaiting");
   refreshReviewControls();
-});
+}
+
+let experienceStarting = false;
+function onStartExperienceClick(): void {
+  if (experienceStarting) return;
+  experienceStarting = true;
+  ui.startExperienceEl.disabled = true;
+  void speech.unlock().finally(() => {
+    ui.startExperienceEl.remove();
+    void restoreSession().then((restored) => {
+      if (!restored) startLivingLineIntro();
+    });
+  });
+}
+
+const ui = new UiOverlayManager(
+  appEl,
+  {
+    onUndo: () => performUndo(),
+    onToolChange: (tool) => setInkTool(tool),
+    onReview: () => onReviewClick(),
+    onRevive: () => startAnalysis(false),
+    onSampleDemo: () => {
+      if (introTimer !== null) window.clearTimeout(introTimer);
+      introTimer = null;
+      introBumpStartedAt = null;
+      loadSampleDemo();
+      startAnalysis(true);
+    },
+    onReset: () => {
+      storyBeats.cancel("restart");
+      if (storage) void storage.clearSession();
+      window.location.reload();
+    },
+    onRepair: () => onRepairClick(),
+    onRepairDone: () => onRepairDoneClick(),
+    onRepairPartSelect: (part) => segmentRepair?.previewPart(part),
+    onStageButtonClick: () => editor.nextStage(),
+    onStartExperience: () => onStartExperienceClick(),
+    onSpeechDebugTest: () => {
+      diagnostics.info("speech_debug_button_clicked", speech.snapshot());
+      void speech.play({ text: "سلام! این صدای تازهٔ من است. آماده‌ام نقاشی‌ات را ببینم!", preset: "delighted" }).then((result) => {
+        diagnostics.info("speech_debug_completed", speech.snapshot());
+        diagnostics.info("speech_debug_result", result);
+      });
+    },
+  },
+  { speechDebugEnabled },
+);
 
 const pointer = new PointerInput(canvas, store, camera, {
   onStrokeStart: () => {
     pencilDown = true;
     lastActivityAt = performance.now();
-    hideRevive();
-    hideReview();
-    hideSampleDemo();
+    ui.hideRevive();
+    ui.hideReview();
+    ui.hideSampleDemo();
   },
   onStrokeEnd: (stroke) => {
     pencilDown = false;
@@ -1670,20 +1429,17 @@ const pointer = new PointerInput(canvas, store, camera, {
     lastPencil = e;
     if ("vibrate" in navigator) try { navigator.vibrate(8); } catch { void 0; }
   },
+  onTwoFingerTap: () => performUndo(),
   onErase: (affectedStrokes) => {
     diagnostics.info("strokes_erased", { affectedStrokes });
     const removedEntityIds = worldEntities.removeByStrokeIds(new Set(affectedStrokes));
     removedEntityIds.forEach((id) => {
       phaserWorld?.removeEntity(id);
-      const movable = movableObjects.get(id);
-      if (movable) {
-        movableObjects.delete(id);
-        movable.rawStrokes.flat().forEach(() => void 0);
-      }
+      rescue.movableObjects.delete(id);
     });
-    affectedStrokes.forEach((id) => movableStrokeIds.delete(id));
+    affectedStrokes.forEach((id) => rescue.movableStrokeIds.delete(id));
     if (removedEntityIds.length > 0) diagnostics.info("world_entities_erased", { removedEntityIds });
-    hideRevive();
+    ui.hideRevive();
     scheduleSave();
     refreshReviewControls();
   },
@@ -1695,32 +1451,6 @@ const pointer = new PointerInput(canvas, store, camera, {
     scheduleSave();
     refreshReviewControls();
   },
-});
-
-function setInkTool(tool: "pen" | "eraser"): void {
-  activeInkTool = tool;
-  pointer.setTool(tool);
-  eraserEl.style.background = tool === "eraser" ? "#F7F5EE" : "rgba(16,59,70,0.82)";
-  eraserEl.style.color = tool === "eraser" ? "#103B46" : "#F7F5EE";
-  diagnostics.info("ink_tool_changed", { tool });
-}
-
-undoEl.addEventListener("click", () => {
-  if (appState.get().mode === "segmenting" && segmentRepair) {
-    if (segmentRepair.undo()) diagnostics.info("body_part_correction_undone");
-    return;
-  }
-  if (!canEditInk()) return;
-  const undone = store.undo((stroke) => stroke.entityId === null);
-  if (!undone) return;
-  diagnostics.info("stroke_undone", { id: undone.id });
-  hideRevive();
-  scheduleSave();
-  refreshReviewControls();
-});
-eraserEl.addEventListener("click", () => {
-  if (!canEditInk()) return;
-  setInkTool(activeInkTool === "eraser" ? "pen" : "eraser");
 });
 
 pointer.interceptor = {
@@ -1758,89 +1488,12 @@ pointer.interceptor = {
 };
 
 function enterFallenRescue(): void {
-  if (!rigRuntime || rescueState.phase === "FALLEN_WAITING_RESCUE" || rescueState.phase === "RESCUING") return;
-  const boundaryY = getViewport().height - 92;
-  if (!phaserWorld?.holdForRescue(boundaryY)) return;
-  if (!rescueState.markFallen()) return;
-  groundChangePending = false;
-  pendingDrawingReaction = null;
-  walking = false;
-  animController.playById("sad");
-  beginAwaitingRescue(true);
-  conversation.append("system", "action", "Hero fell through the erased ground and is waiting below for a drawn ladder.");
-  const hint = "اوه! افتادم... یک نردبان پله‌پله برام بکش تا بیام بالا.";
-  speakStoryText(hint, hint, "sad", undefined, "sad");
-  diagnostics.info("hero_waiting_for_ladder", {
-    boundaryY,
-    edges: groundPath.nearestIntactEdges(rigRuntime.jointWorld("root")?.x ?? 0),
-  });
-}
-
-function transformedBounds(movable: MovableWorldObject): { x: number; y: number; width: number; height: number } {
-  const points = movable.transformedStrokes().flat();
-  const xs = points.map((point) => point.x);
-  const ys = points.map((point) => point.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  return { x: minX, y: minY, width: Math.max(8, maxX - minX), height: Math.max(8, maxY - minY) };
-}
-
-function updateLadderRescue(now: number): void {
-  if (rescueState.phase !== "RESCUING" || rescueStartedAt === null || !rescuePlan || !rescueLadderId) return;
-  const ladder = movableObjects.get(rescueLadderId);
-  if (!ladder) return;
-  const elapsed = now - rescueStartedAt;
-  const placementMs = 1_300;
-  const climbDelayMs = 220;
-  const climbMs = 3_200;
-  ladder.setPlacementProgress(rescuePlan.targetTransform, elapsed / placementMs);
-  if (elapsed < placementMs + climbDelayMs) return;
-  if (animController.currentId !== "ladder_climb") {
-    animController.playById("ladder_climb");
-    diagnostics.info("ladder_climb_started", { waypoints: rescuePlan.waypoints.length });
+  if (rescue.enterFallenRescue(rigRuntime)) {
+    groundChangePending = false;
+    pendingDrawingReaction = null;
+    walking = false;
+    beginAwaitingRescue(true);
   }
-  const progress = Math.max(0, Math.min(1, (elapsed - placementMs - climbDelayMs) / climbMs));
-  const waypoint = rescueWaypointAt(rescuePlan, progress);
-  phaserWorld?.setRescueRootPosition(waypoint);
-  if (progress < 1) return;
-
-  ladder.setTransform(rescuePlan.targetTransform);
-  const bounds = transformedBounds(ladder);
-  worldEntities.setTransform(rescueLadderId, ladder.transform, bounds);
-  phaserWorld?.addEntity({ id: rescueLadderId, shape: "ladder", ...bounds, angleDegrees: ladder.transform.rotation });
-  phaserWorld?.completeRescue(rescuePlan.landing);
-  rescueState.complete();
-  rescueStartedAt = null;
-  rescuePlan = null;
-  rescueLadderId = null;
-  animController.playById("happy");
-  conversation.append("system", "action", "Hero picked up the child's ladder, placed it at the intact edge, climbed it, and returned safely to the ground.");
-  const success = "هوف! رسیدم بالا؛ نردبانت هم همین‌جا می‌مونه.";
-  speakStoryText(success, success, "delighted", undefined, "happy");
-  beginAwaitingDrawing("free_draw", true);
-  scheduleSave();
-  diagnostics.info("ladder_rescue_completed", { bounds, navigation: phaserWorld?.navigationSnapshot() });
-}
-
-function drawMovableObjects(): void {
-  ctx.save();
-  ctx.translate(-camera.state.x, -camera.state.y);
-  ctx.strokeStyle = PALETTE.primaryInk;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  for (const movable of movableObjects.values()) {
-    for (const points of movable.transformedStrokes()) {
-      if (points.length < 2) continue;
-      ctx.lineWidth = BASE_LINE_WIDTH;
-      ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y);
-      for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
-      ctx.stroke();
-    }
-  }
-  ctx.restore();
 }
 
 function activeRodTip(): { x: number; y: number } | null {
@@ -1895,36 +1548,12 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
   ctx.lineCap = "round";
   for (const poly of groundPath.screenPolylines(camera.state.x)) {
     ctx.beginPath();
-    poly.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+    poly.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y - camera.state.y) : ctx.lineTo(x, y - camera.state.y)));
     ctx.stroke();
   }
-  for (let i = dustParticles.length - 1; i >= 0; i--) {
-    const p = dustParticles[i];
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vy += 0.18;
-    p.vx *= 0.98;
-    p.life -= 0.04;
-    if (p.life <= 0) dustParticles.splice(i, 1);
-  }
-  if (dustParticles.length > 0) {
-    ctx.save();
-    ctx.translate(-camera.state.x, -camera.state.y);
-    ctx.strokeStyle = PALETTE.primaryInk;
-    ctx.lineCap = "round";
-    for (const p of dustParticles) {
-      ctx.globalAlpha = Math.max(0, p.life) * 0.85;
-      ctx.lineWidth = 1.8;
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-      ctx.lineTo(p.x + p.vx * 0.5, p.y + p.vy * 0.2 + 1);
-      ctx.stroke();
-    }
-    ctx.restore();
-    ctx.globalAlpha = 1;
-  }
+  particles.updateAndDrawDust(ctx, camera);
 
-  updateLadderRescue(now);
+  rescue.updateLadderRescue(now);
 
   if (appState.get().mode === "intro" && !rigRuntime) {
     const elapsed = introBumpStartedAt === null ? 0 : now - introBumpStartedAt;
@@ -1947,12 +1576,12 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
   pond?.draw(ctx, camera, now);
 
   for (const stroke of store.all()) {
-    if (stroke.active && stroke.entityId === null && !riggedStrokeIds.has(stroke.id) && !movableStrokeIds.has(stroke.id)) {
+    if (stroke.active && stroke.entityId === null && !riggedStrokeIds.has(stroke.id) && !rescue.movableStrokeIds.has(stroke.id)) {
       renderer.drawStroke(ctx, stroke, camera);
     }
   }
-  for (const [id, movable] of movableObjects) {
-    if (id === rescueLadderId) continue;
+  for (const [id, movable] of rescue.movableObjects) {
+    if (id === rescue.rescueLadderId) continue;
     const entity = worldEntities.get(id);
     if (!entity || entity.physicsShape !== "dynamic") continue;
     const state = phaserWorld?.getBodyState(id);
@@ -1966,7 +1595,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       scale: 1,
     });
   }
-  drawMovableObjects();
+  rescue.drawMovableObjects(ctx, camera);
 
   if (rigRuntime) {
     if (walking && walker) {
@@ -1995,6 +1624,10 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
           navigationLastX = root.x;
           animController.setWalkDistance(navigationTravel, 90 * rigRuntime.proportionScale);
         }
+        const locomotion: MotionId = phaserWorld.navigationSnapshot().climbingSegment ? "ladder_climb" : "walk";
+        if (animController.currentId !== locomotion && (animController.currentId === "walk" || animController.currentId === "ladder_climb" || animController.currentId === "idle")) {
+          animController.playById(locomotion);
+        }
         physicsNavigationWasActive = true;
         if (root && root.x - camera.state.x > w * 0.58) {
           camera.setX(easeToward(camera.state.x, root.x - w * 0.38, dt));
@@ -2004,7 +1637,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
         physicsNavigationWasActive = false;
         navigationTravel = 0;
         navigationLastX = null;
-        if (animController.currentId === "walk") animController.playById("idle");
+        if (animController.currentId === "walk" || animController.currentId === "ladder_climb") animController.playById("idle");
         const pending = pendingDrawingReaction;
         const snapshot = phaserWorld?.navigationSnapshot();
         if (snapshot?.actionId) {
@@ -2028,7 +1661,12 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
             state: snapshot.state,
             failureReason: snapshot.failureReason,
           });
-          finishDrawingReaction(pending.action, pending.entityIds, pending.emotion, pending.bubble, pending.spoken);
+          if (snapshot.state === "failed") {
+            const stuck = "اوخ! نتونستم برم اونجا؛ یه راه دیگه برام بکش.";
+            finishDrawingReaction(null, pending.entityIds, "protesting", stuck, stuck);
+          } else {
+            finishDrawingReaction(pending.action, pending.entityIds, pending.emotion, pending.bubble, pending.spoken);
+          }
         }
       }
     }
@@ -2039,7 +1677,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       let correction = 0;
       for (const foot of [leftFoot, rightFoot]) {
         if (!foot) continue;
-        const groundY = phaserWorld.getGroundHeightAt(foot.x);
+        const groundY = phaserWorld.getGroundHeightAt(foot.x, foot.y);
         if (groundY === null) continue;
         const delta = groundY - foot.y;
         if (delta > 0.5 && delta < 18) correction = Math.max(correction, delta);
@@ -2048,6 +1686,12 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
         const base = rigRuntime.entityTransform;
         rigRuntime.setEntityTransform({ ...base, y: base.y + correction * 0.85 });
       }
+    }
+
+    const headForCamera = rigRuntime.jointWorld("head");
+    if (headForCamera) {
+      const targetCameraY = verticalFollowTarget(headForCamera.y, h);
+      if (Math.abs(camera.state.y - targetCameraY) > 0.5) camera.state.y = easeToward(camera.state.y, targetCameraY, dt, 2.4);
     }
 
     const walkingNow = walking || phaserWorld?.isNavigating || animController.currentId === "walk";
@@ -2059,7 +1703,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
     const rootForRescue = rigRuntime.jointWorld("root");
     const baselineForRescue = h * BASE_LINE_Y_RATIO;
     if (
-      (rescueState.phase === "NONE" || rescueState.phase === "RECOVERED") &&
+      (rescue.phase === "NONE" || rescue.phase === "RECOVERED") &&
       physicsMotion === "falling" &&
       rootForRescue &&
       rootForRescue.y > baselineForRescue + 72 &&
@@ -2075,9 +1719,9 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       rigRuntime.expression = "neutral";
       animController.playById("idle");
       sfx.land(0.9);
-      triggerSquash(1.08, 0.88, 120, now);
+      particles.triggerSquash(1.08, 0.88, 120, now);
       const foot = rigRuntime.jointWorld("left_foot") ?? rigRuntime.jointWorld("right_foot");
-      if (foot) spawnDust(foot.x, foot.y + 4, 7);
+      if (foot) particles.spawnDust(foot.x, foot.y + 4, 7);
       if ("vibrate" in navigator) try { navigator.vibrate(12); } catch { void 0; }
     }
 
@@ -2085,7 +1729,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       rigRuntime &&
       !walking &&
       !phaserWorld?.isNavigating &&
-      rescueState.phase !== "RESCUING" &&
+      !rescue.isRescuing &&
       (appState.get().mode === "awaiting" || appState.get().mode === "live") &&
       !analysisInFlight &&
       animController.currentId === "idle" &&
@@ -2108,19 +1752,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
       rootDeltaY: pose.rootDeltaY * rigRuntime.proportionScale,
       rootRotation: pose.rootRotation,
     });
-    if (now < squashUntil) {
-      const remaining = squashUntil - now;
-      const duration = 120;
-      const p = 1 - remaining / duration;
-      const ease = p < 0.5 ? 2 * p * p : -1 + (4 - 2 * p) * p;
-      const sx = 1 + (squashScaleX - 1) * (1 - ease);
-      const sy = 1 + (squashScaleY - 1) * (1 - ease);
-      const base = rigRuntime.entityTransform;
-      rigRuntime.setEntityTransform({ ...base, scaleX: sx, scaleY: sy });
-    } else if (rigRuntime.entityTransform.scaleX !== 1 || rigRuntime.entityTransform.scaleY !== 1) {
-      const base = rigRuntime.entityTransform;
-      rigRuntime.setEntityTransform({ ...base, scaleX: 1, scaleY: 1 });
-    }
+    particles.applySquash(rigRuntime, now);
 
     const strokes = rigRuntime.transformedStrokeSegments();
     ctx.save();
@@ -2153,7 +1785,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
 
   if (appState.get().mode === "setup") {
     editor.draw(ctx, camera);
-    stageTitleEl.style.opacity = "1";
+    ui.stageTitleEl.style.opacity = "1";
   }
   if (appState.get().mode === "segmenting" && segmentRepair) segmentRepair.draw(ctx, camera);
 
@@ -2192,7 +1824,7 @@ function renderFrame(now: number, resolution = window.devicePixelRatio || 1): vo
 appState.subscribe((state) => {
   if (state.mode !== "intro" && state.mode !== "awaiting" && state.mode !== "fallen_waiting_rescue") setInkTool("pen");
   const inkControlsVisible = state.mode === "awaiting" || state.mode === "fallen_waiting_rescue";
-  for (const control of [undoEl, eraserEl]) {
+  for (const control of [ui.undoEl, ui.eraserEl]) {
     control.style.opacity = inkControlsVisible ? "0.92" : "0";
     control.style.pointerEvents = inkControlsVisible ? "auto" : "none";
     control.tabIndex = inkControlsVisible ? 0 : -1;
@@ -2216,14 +1848,14 @@ phaserWorld = new PhaserWorldController(
       diagnostics.info(event, detail);
       if (event === "character_landed") {
         sfx.land(0.85);
-        triggerSquash(1.08, 0.88, 120, performance.now());
+        particles.triggerSquash(1.08, 0.88, 120, performance.now());
         const x = typeof detail.x === "number" ? detail.x : rigRuntime?.jointWorld("left_foot")?.x ?? 0;
         const y = typeof detail.y === "number" ? detail.y : rigRuntime?.jointWorld("left_foot")?.y ?? 0;
-        spawnDust(x, y + 4, 6);
+        particles.spawnDust(x, y + 4, 6);
       }
       if (event === "navigation_recovery") {
         sfx.jump();
-        triggerSquash(0.92, 1.12, 110, performance.now());
+        particles.triggerSquash(0.92, 1.12, 110, performance.now());
       }
     },
   },
@@ -2231,56 +1863,20 @@ phaserWorld = new PhaserWorldController(
   window.innerHeight,
 );
 
-speech.preload(Object.values(QUESTS).flatMap((questDefinition) =>
-  questDefinition.requests.map((line) => ({
-    text: line.spoken,
-    preset: line.emotion,
-    audioUrl: line.audioUrl,
-    fallbackAudioUrl: line.fallbackAudioUrl,
-  })),
-));
-
-const startExperienceEl = document.createElement("button");
-startExperienceEl.textContent = "شروع";
-startExperienceEl.title = "شروع داستان";
-startExperienceEl.setAttribute("aria-label", "شروع داستان");
-startExperienceEl.style.cssText = [
-  "position:absolute",
-  "z-index:100",
-  "left:50%",
-  "top:50%",
-  "transform:translate(-50%,-50%)",
-  "min-width:132px",
-  "min-height:58px",
-  "padding:12px 26px",
-  "border-radius:999px",
-  "border:3px solid #F7F5EE",
-  "background:#103B46",
-  "color:#F7F5EE",
-  "font:700 22px system-ui,'Segoe UI',Tahoma,sans-serif",
-  "cursor:pointer",
-  "box-shadow:0 10px 30px rgba(0,0,0,.3)",
-].join(";");
-appEl.appendChild(startExperienceEl);
-
-let experienceStarting = false;
-startExperienceEl.addEventListener("click", () => {
-  if (experienceStarting) return;
-  experienceStarting = true;
-  startExperienceEl.disabled = true;
-  void speech.unlock().finally(() => {
-    startExperienceEl.remove();
-    void restoreSession().then((restored) => {
-      if (!restored) startLivingLineIntro();
-    });
-  });
-});
+speech.preload([
+  ...Object.values(QUESTS).flatMap((questDefinition) =>
+    questDefinition.requests.map((line) => ({
+      text: line.spoken,
+      preset: line.emotion,
+      audioUrl: line.audioUrl,
+      fallbackAudioUrl: line.fallbackAudioUrl,
+    })),
+  ),
+  { text: "اوه! افتادم... یک نردبان پله‌پله برام بکش تا بیام بالا.", preset: "sad", audioUrl: "/audio/hero/ladder-fall.pwa" },
+]);
 
 if (typeof navigator !== "undefined" && "serviceWorker" in navigator && import.meta.env.PROD) {
   void navigator.serviceWorker.register("/sw.js").catch(() => void 0);
 }
-
-// The experience deliberately waits for the start gesture above. Safari only
-// permits reliable Web Audio playback after a direct user interaction.
 
 console.log("[line-pal] bootstrap ready");

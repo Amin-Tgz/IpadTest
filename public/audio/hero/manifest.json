@@ -33,5 +33,10 @@
     "text": "آها!",
     "preset": "delighted",
     "path": "/audio/hero/interjection-delighted.pwa"
+  },
+  "ladder-fall": {
+    "text": "اوه! افتادم... یک نردبان پله‌پله برام بکش تا بیام بالا.",
+    "preset": "sad",
+    "path": "/audio/hero/ladder-fall.pwa"
   }
 }

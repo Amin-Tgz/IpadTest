@@ -17,6 +17,21 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: "dist",
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes("node_modules/phaser/")) {
+              return "phaser";
+            }
+            if (id.includes("node_modules/perfect-freehand/")) {
+              return "drawing-vendor";
+            }
+            if (id.includes("node_modules/zod/")) {
+              return "schema-vendor";
+            }
+          },
+        },
+      },
     },
   };
 });

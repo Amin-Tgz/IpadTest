@@ -20,6 +20,7 @@ export interface PointerInputCallbacks {
   onPencilDown?: (event: PencilEvent) => void;
   onErase?: (affectedStrokeIds: string[]) => void;
   onEraserMove?: (point: { x: number; y: number }) => void;
+  onTwoFingerTap?: () => void;
 }
 
 interface CoalescingPointerEvent {
@@ -52,6 +53,9 @@ export class PointerInput {
   private groupId: string | null = null;
   private tool: "pen" | "eraser" = "pen";
   private erasingPointerId: number | null = null;
+  private activeTouches = new Map<number, { startX: number; startY: number; startTime: number; moved: boolean }>();
+  private hadTwoTouches = false;
+  private twoTouchesStartTime = 0;
   interceptor: PointerInterceptor | null = null;
 
   get liveStroke(): Stroke | null {
@@ -101,7 +105,22 @@ export class PointerInput {
 
   private onPointerDown = (e: PointerEvent): void => {
     e.preventDefault();
-    if (e.pointerType === "touch") return;
+    if (e.pointerType === "touch") {
+      const now = performance.now();
+      this.activeTouches.set(e.pointerId, {
+        startX: e.clientX,
+        startY: e.clientY,
+        startTime: now,
+        moved: false,
+      });
+      if (this.activeTouches.size === 2) {
+        this.hadTwoTouches = true;
+        this.twoTouchesStartTime = now;
+      } else if (this.activeTouches.size > 2) {
+        this.hadTwoTouches = false;
+      }
+      return;
+    }
     if (e.pointerType === "mouse" && e.button !== 0) return;
     const p = this.toWorld(e.clientX, e.clientY);
     if (this.interceptor && this.interceptor.down(p, e)) {
@@ -141,6 +160,15 @@ export class PointerInput {
 
   private onPointerMove = (e: PointerEvent): void => {
     e.preventDefault();
+    if (e.pointerType === "touch") {
+      const touch = this.activeTouches.get(e.pointerId);
+      if (touch && !touch.moved) {
+        const dx = e.clientX - touch.startX;
+        const dy = e.clientY - touch.startY;
+        if (Math.hypot(dx, dy) > 20) touch.moved = true;
+      }
+      return;
+    }
     if (this.erasingPointerId === e.pointerId) {
       this.eraseAt(this.toWorld(e.clientX, e.clientY));
       return;
@@ -162,6 +190,22 @@ export class PointerInput {
 
   private onPointerUp = (e: PointerEvent): void => {
     e.preventDefault();
+    if (e.pointerType === "touch") {
+      const touch = this.activeTouches.get(e.pointerId);
+      const now = performance.now();
+      if (this.hadTwoTouches && touch && !touch.moved && now - this.twoTouchesStartTime < 350) {
+        if (this.activeTouches.size <= 2) {
+          const allStationary = Array.from(this.activeTouches.values()).every((t) => !t.moved);
+          if (allStationary && !this.current) {
+            this.callbacks.onTwoFingerTap?.();
+            this.hadTwoTouches = false;
+          }
+        }
+      }
+      this.activeTouches.delete(e.pointerId);
+      if (this.activeTouches.size === 0) this.hadTwoTouches = false;
+      return;
+    }
     const p = this.toWorld(e.clientX, e.clientY);
     if (this.erasingPointerId === e.pointerId) {
       this.erasingPointerId = null;

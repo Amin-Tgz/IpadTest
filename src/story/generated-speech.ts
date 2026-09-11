@@ -49,7 +49,26 @@ export class GeneratedSpeech {
   private token = 0;
   private voiceLevel = 0;
 
-  constructor(private readonly diagnostic: GeneratedSpeechDiagnostic = () => void 0) {}
+  constructor(private readonly diagnostic: GeneratedSpeechDiagnostic = () => void 0) {
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && this.context?.state === "suspended") {
+          void this.context.resume().then(() => {
+            this.diagnostic("audio_context_resumed_on_visibility", this.snapshot());
+          }).catch(() => void 0);
+        }
+      });
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener("pageshow", () => {
+        if (this.context?.state === "suspended") {
+          void this.context.resume().then(() => {
+            this.diagnostic("audio_context_resumed_on_pageshow", this.snapshot());
+          }).catch(() => void 0);
+        }
+      });
+    }
+  }
 
   get supported(): boolean {
     return typeof window !== "undefined" && ("AudioContext" in window || "webkitAudioContext" in window);
@@ -87,7 +106,7 @@ export class GeneratedSpeech {
       .catch((error) => {
         this.diagnostic("prime_error", { message: describe(error), static: plan.kind === "static" });
       });
-    if (plan.kind === "generated") return done;
+    if (plan.kind === "generated" || request.audioUrl) return done;
     const base = this.baseRequest(request);
     if (base.text.length >= REFRESH_MIN_TEXT_LENGTH && !this.audioCache.has(this.cacheKey(base))) {
       void this.loadAudio(base, new AbortController().signal).catch((error) => {

@@ -99,7 +99,7 @@ export function captureViewport(
   ctx.fillRect(0, 0, width, height);
 
   ctx.save();
-  ctx.translate(-camera.state.x * scale, 0);
+  ctx.translate(-camera.state.x * scale, -camera.state.y * scale);
   ctx.scale(scale, scale);
 
   ctx.strokeStyle = PALETTE.primaryInk;
@@ -126,7 +126,7 @@ export function captureViewport(
 
   ctx.restore();
 
-  const mapping: CaptureMapping = { scale, cameraX: camera.state.x, cameraY: 0, width, height };
+  const mapping: CaptureMapping = { scale, cameraX: camera.state.x, cameraY: camera.state.y, width, height };
   return {
     dataUrl: canvas.toDataURL("image/png"),
     mapping,
