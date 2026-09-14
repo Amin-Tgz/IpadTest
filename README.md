@@ -178,8 +178,6 @@ AI outputs are validated with closed Zod/JSON schemas, fixed attachment anchors,
 ## Documentation
 
 - [CLAUDE.md](CLAUDE.md) — repository conventions and architecture summary
-- [docs.md](docs.md) — implementation progress and verification notes
-- [plan.md](plan.md) — product and engineering specification
 - [rules.md](rules.md) — platform and security rules
 
 ## License
