@@ -1,5 +1,11 @@
 # Line Pal — رفیق خطی
 
+<img width="778" height="378" alt="image" src="https://github.com/user-attachments/assets/a04f95da-83cb-4b2a-861b-e5c646c1155e" />
+
+
+
+
+
 Line Pal is a line-drawing adventure designed for iPad and Apple Pencil. An original living-line hero rises from the ground, then a child draws the shoes, tools, obstacles, and scenery that help it move through the world.
 
 The central rule is simple: **the child's solution strokes stay the artwork**. AI understands the drawing; an authored hero, deterministic animation, and physics execute the result.
