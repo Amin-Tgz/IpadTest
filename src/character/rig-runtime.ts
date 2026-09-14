@@ -3,6 +3,9 @@ import type { JointId } from "../app/constants.js";
 import type { Camera } from "../world/camera.js";
 import { inverseTransformWorldPoint, transformLocalPoint, type EntityTransform } from "./entity-transform.js";
 import { solveTwoBoneIK } from "../animation/two-bone-ik.js";
+import { StrandSway } from "./strand-sway.js";
+
+const SWAYING_STROKES = new Set(["hero_ponytail"]);
 
 export interface RigPose {
   jointRotations: Partial<Record<JointId, number>>;
@@ -345,7 +348,22 @@ export class RigRuntime {
       transformed[strokeIndex] = smoothLimb(start, middle, end, this.rig.strokes[strokeIndex].points.length);
     }
     if (this.pointing) this.applyPointingFingers(transformed, this.pointing.hand);
+    this.applyStrandSway(transformed, timeMs);
     return transformed;
+  }
+
+  private readonly strands = new Map<string, StrandSway>();
+
+  private applyStrandSway(transformed: Array<Array<{ x: number; y: number }>>, timeMs: number): void {
+    this.rig.strokes.forEach((stroke, index) => {
+      if (!SWAYING_STROKES.has(stroke.id) || !transformed[index]) return;
+      let strand = this.strands.get(stroke.id);
+      if (!strand) {
+        strand = new StrandSway();
+        this.strands.set(stroke.id, strand);
+      }
+      transformed[index] = strand.apply(transformed[index], timeMs);
+    });
   }
 
   private applyPointingFingers(transformed: Array<Array<{ x: number; y: number }>>, hand: PointingHand): void {

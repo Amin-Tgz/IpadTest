@@ -46,8 +46,10 @@ const SOLID_CLEARANCE = 36;
 
 export type JumpDestination =
   | { kind: "toward"; x: number }
-  | { kind: "drop"; direction: -1 | 1 | null }
+  | { kind: "drop"; direction: -1 | 1 | null; towardX?: number }
   | { kind: "hop" };
+
+const SAME_SPOT = 24;
 
 /**
  * Where a requested jump lands: at the tip of a drawn arrow, on a drawn
@@ -61,6 +63,11 @@ export function jumpDestination(
   if (target) {
     const { bounds } = target;
     if (target.physical) return { kind: "toward", x: bounds.x + bounds.width / 2 };
+    if (direction === "down") {
+      const center = bounds.x + bounds.width / 2;
+      const side = Math.abs(center - rootX) < SAME_SPOT ? null : center < rootX ? -1 : 1;
+      return { kind: "drop", direction: side, towardX: center };
+    }
     const leftEnd = bounds.x;
     const rightEnd = bounds.x + bounds.width;
     if (direction === "right") return { kind: "toward", x: rightEnd };
@@ -71,6 +78,19 @@ export function jumpDestination(
   if (direction === "right") return { kind: "drop", direction: 1 };
   if (direction === "down") return { kind: "drop", direction: null };
   return { kind: "hop" };
+}
+
+/**
+ * Where a jump off the current height lands: just past the drop edge, or at
+ * the drawn arrow when it points farther out than that edge. Null means there
+ * is nowhere lower to go.
+ */
+export function dropLanding(rootX: number, edgeX: number | null, towardX?: number): number | null {
+  if (towardX === undefined) return edgeX;
+  const reach = Math.abs(towardX - rootX);
+  if (edgeX === null) return reach >= SAME_SPOT ? towardX : null;
+  const sameSide = Math.sign(towardX - rootX) === Math.sign(edgeX - rootX);
+  return sameSide && reach > Math.abs(edgeX - rootX) ? towardX : edgeX;
 }
 
 export function farthestToolPoint(

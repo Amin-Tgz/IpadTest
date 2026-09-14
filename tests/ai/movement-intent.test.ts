@@ -68,6 +68,21 @@ describe("movement intent", () => {
     expect(resolveMovementIntent([object("arrow", "none")], action("move", null, "down"))).toMatchObject({ type: "jump", direction: "down" });
   });
 
+  it("jumps down toward a down arrow whether the provider said move, climb, or jump", () => {
+    const arrow = [{ ...object("arrow", "none"), affordances: ["points down", "step down from the stairs"] }];
+    expect(resolveMovementIntent(arrow, action("move", 0, "down"))).toMatchObject({ type: "jump", targetObjectIndex: 0, direction: "down" });
+    expect(resolveMovementIntent(arrow, action("climb", 0, "down"))).toMatchObject({ type: "jump", targetObjectIndex: 0, direction: "down" });
+    expect(resolveMovementIntent(arrow, action("jump", 0, "down"))).toMatchObject({ type: "jump", targetObjectIndex: 0, direction: "down" });
+  });
+
+  it("never turns an arrow or written instruction into something to climb", () => {
+    expect(inferredPhysicsShape({ ...object("arrow", "none"), affordances: ["step down"] })).toBeNull();
+    expect(inferredPhysicsShape(object("down_arrow", "stairs"))).toBeNull();
+    expect(inferredPhysicsShape(object("فلش رو به پایین", "none"))).toBeNull();
+    expect(inferredPhysicsShape({ ...object("handwriting", "none"), affordances: ["برو از پله پایین"] })).toBeNull();
+    expect(resolveMovementIntent([{ ...object("arrow", "none"), affordances: ["step down"] }], null)).toBeNull();
+  });
+
   it("keeps deliberate actions and drawings without anything to climb", () => {
     const stairs = [object("stairs", "stairs")];
     expect(resolveMovementIntent(stairs, action("jump", null))).toMatchObject({ type: "jump" });

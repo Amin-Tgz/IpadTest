@@ -7,8 +7,11 @@ const INVITES_CLIMBING = new Set<PhysicsShape>(["stairs", "slope", "ladder"]);
 const CLIMB_TARGETS = new Set<PhysicsShape>(["stairs", "slope", "ladder", "obstacle"]);
 const PASSIVE_ACTIONS = new Set<AIActionRequest["type"]>(["react", "speak", "scratch_head", "point"]);
 const RIDE_REQUESTS = new Set<AIActionRequest["type"]>(["ride", "move", "use", "interact", "equip", "climb"]);
+const INSTRUCTION = /(?:^|[^a-z])(?:arrow|text|writing|handwriting)|motion.?line|فلش|پیکان|نوشته/i;
 
 export function inferredPhysicsShape(object: Pick<DrawingObject, "type" | "affordances" | "physicsShape">): PhysicsShape | null {
+  // An arrow's affordances describe where to go («step down the stairs»), not what it is.
+  if (INSTRUCTION.test(object.type)) return null;
   if (object.physicsShape && object.physicsShape !== "none") return object.physicsShape;
   const semantic = `${object.type} ${object.affordances.join(" ")}`.toLowerCase();
   if (/motor|bike|bicycle|scooter|vespa|\bcar\b|truck|\bbus\b|jeep|tractor|skateboard|vehicle|موتور|دوچرخه|ماشین|اسکوتر|کامیون|اتوبوس|جیپ|تراکتور|اسکیت/.test(semantic)) return "vehicle";
@@ -33,7 +36,8 @@ function centerWithin(inner: IntentObject["boundingBox"], outer: IntentObject["b
 /**
  * Drawn stairs, ramps, hills, and ladders exist to be climbed. When the
  * provider only reacts to them, points at them, or targets the arrow the child
- * drew on them, the hero still goes up the structure the child built.
+ * drew on them, the hero still goes up the structure the child built. Going
+ * down is always a jump: the hero leaps off whatever it stands on.
  */
 export function resolveMovementIntent(objects: IntentObject[], action: AIActionRequest | null): AIActionRequest | null {
   const shapes = objects.map(inferredPhysicsShape);
@@ -57,6 +61,10 @@ export function resolveMovementIntent(objects: IntentObject[], action: AIActionR
 
   if (!action || PASSIVE_ACTIONS.has(action.type)) return inviting >= 0 ? climb(inviting) : action;
 
+  if (action.direction === "down" && (action.type === "move" || action.type === "climb") && (targetShape === null || !CLIMB_TARGETS.has(targetShape))) {
+    return { ...action, type: "jump" };
+  }
+
   if (action.type === "climb") {
     if (targetShape !== null && CLIMB_TARGETS.has(targetShape)) return action;
     return climbable >= 0 ? climb(climbable) : action;
@@ -64,7 +72,6 @@ export function resolveMovementIntent(objects: IntentObject[], action: AIActionR
   if (action.type === "move") {
     if (!target) {
       if (action.direction === "up" && inviting >= 0) return climb(inviting);
-      if (action.direction === "down") return { ...action, type: "jump" };
       return action;
     }
     if (targetShape !== null) return action;

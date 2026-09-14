@@ -70,6 +70,8 @@ interface NavigationState {
   kinematic: boolean;
   lastTick: number;
   pauseUntil: number | null;
+  /** A leap only arrives once it has landed; arriving mid-air drops the hero straight down, often back onto the ledge. */
+  landFirst: boolean;
 }
 
 export class LivingDrawingScene extends Phaser.Scene {
@@ -393,6 +395,7 @@ export class PhaserWorldController {
     const direction = targetX < this.characterBody.position.x ? -1 : 1;
     const result = this.startNavigation(targetX, undefined, false, undefined, targetEntityId);
     if (!result.started || !this.navigation) return result;
+    this.navigation.landFirst = true;
     const strength = Math.max(8, Math.min(16, this.characterHalfHeight * 0.075));
     this.scene.matter.body.setVelocity(this.characterBody, { x: direction * this.navigation.speed, y: -strength });
     this.emit("jump_started", { actionId: result.actionId, targetX, direction });
@@ -520,6 +523,11 @@ export class PhaserWorldController {
     const dy = waypoint.y === undefined ? 0 : waypoint.y - this.characterBody.position.y;
     const arrival = Math.max(10, Math.min(24, this.characterHalfHeight * 0.08));
     if (Math.abs(dx) <= arrival && (waypoint.y === undefined || Math.abs(dy) <= Math.max(arrival, 26))) {
+      if (navigation.landFirst && !this.isGrounded()) {
+        this.scene.matter.body.setVelocity(this.characterBody, { x: 0, y: this.characterBody.velocity.y });
+        navigation.lastProgressAt = time;
+        return;
+      }
       if (navigation.waypointIndex < navigation.waypoints.length - 1) {
         navigation.waypointIndex++;
         navigation.lastProgressAt = time;
@@ -580,7 +588,7 @@ export class PhaserWorldController {
       actionId, state: climb ? "climbing" : "walking", targetX, targetY, targetEntityId,
       speed: scaledSpeed, waypoints: route, waypointIndex: 0, startedAt: now,
       lastProgressAt: now, lastX: this.characterBody.position.x, recoveryUsed: false,
-      kinematic, lastTick: now, pauseUntil: null,
+      kinematic, lastTick: now, pauseUntil: null, landFirst: false,
     };
     this.wakeCharacter("navigation_start");
     this.lastNavigation = {

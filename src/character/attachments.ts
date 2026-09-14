@@ -40,6 +40,31 @@ export function attachmentWorldPoints(
   );
 }
 
+export function isHandHeld(attachment: Pick<Attachment, "kind" | "boneId">): boolean {
+  return attachment.kind === "held_tool" || attachment.boneId === "left_hand" || attachment.boneId === "right_hand";
+}
+
+/**
+ * Turns a held tool about its grip so its far end points at `angleDegrees`
+ * (screen space, y down), shortening it to `maxLength` but never enlarging it.
+ */
+export function aimHeldTool(attachment: Attachment, angleDegrees: number, maxLength: number): Attachment {
+  let tip = { x: 0, y: 0 };
+  for (const stroke of attachment.strokes) {
+    for (const point of stroke.localPoints) {
+      if (Math.hypot(point.x, point.y) > Math.hypot(tip.x, tip.y)) tip = point;
+    }
+  }
+  const length = Math.hypot(tip.x, tip.y);
+  if (length < 1) return attachment;
+  const scale = Math.min(1, maxLength / length);
+  const current = Math.atan2(tip.y, tip.x) * 180 / Math.PI;
+  return {
+    ...attachment,
+    localTransform: { ...attachment.localTransform, rotation: angleDegrees - current, scaleX: scale, scaleY: scale },
+  };
+}
+
 export interface DetectedObject {
   type: string;
   category: "wearable" | "held_tool" | "decoration" | "other";
@@ -80,7 +105,9 @@ export function buildAttachmentFromObject(
   resolvedStrokeIds?: ReadonlySet<string>,
 ): Attachment | null {
   if (!object.attachTo || !object.anchor) return null;
-  const boneId = resolveBoneId(object.attachTo, object.anchor, runtime);
+  const boneId = object.category === "held_tool"
+    ? resolveHandId(object.attachTo, object.anchor, runtime)
+    : resolveBoneId(object.attachTo, object.anchor, runtime);
   if (!boneId) return null;
 
   const box = {
@@ -105,7 +132,7 @@ export function buildAttachmentFromObject(
   if (claimed.length === 0) return null;
 
   const ink = inkBounds(claimed);
-  const anchor = attachmentSourceAnchor(object, boneId, ink);
+  const anchor = attachmentSourceAnchor(object, boneId, ink, claimed);
   const attachmentStrokes: AttachmentStroke[] = claimed.map((stroke) => ({
     sourceStrokeId: stroke.id,
     localPoints: toLocalPoints(samplePoints(stroke.points.map((p) => ({ x: p.x, y: p.y }))), anchor),
@@ -137,7 +164,7 @@ function samplePoints(points: Array<{ x: number; y: number }>): Array<{ x: numbe
   return points.filter((_, index) => index % step === 0);
 }
 
-function restCharacterHeight(runtime: RigRuntime): number {
+export function restCharacterHeight(runtime: RigRuntime): number {
   let minY = Infinity;
   let maxY = -Infinity;
   for (const joint of runtime.joints) {
@@ -168,11 +195,18 @@ export function inkBounds(
 // shoe — is what belongs there; anchoring higher buries the shoe underground.
 const SHOE_SOLE_RATIO = 0.82;
 
+// Providers often put a held tool's anchor on the hand joint instead of on the
+// drawn handle; the tool would then hang in the air wherever the child drew
+// it. An anchor that is not on the ink grips the ink point nearest to it.
+const GRIP_SNAP_PX = 24;
+
 function attachmentSourceAnchor(
   object: DetectedObject,
   boneId: JointId,
   ink: { x: number; y: number; width: number; height: number },
+  claimed: Array<{ points: Array<{ x: number; y: number }> }>,
 ): { x: number; y: number } {
+  if (object.category === "held_tool") return gripAnchor(object.anchor!, claimed);
   if (object.category !== "wearable" || !boneId.endsWith("foot")) return object.anchor!;
   return {
     x: ink.x + ink.width / 2,
@@ -180,12 +214,36 @@ function attachmentSourceAnchor(
   };
 }
 
+function gripAnchor(
+  anchor: { x: number; y: number },
+  strokes: Array<{ points: Array<{ x: number; y: number }> }>,
+): { x: number; y: number } {
+  let nearest = anchor;
+  let best = Infinity;
+  for (const stroke of strokes) {
+    for (const point of stroke.points) {
+      const distance = Math.hypot(point.x - anchor.x, point.y - anchor.y);
+      if (distance < best) {
+        best = distance;
+        nearest = { x: point.x, y: point.y };
+      }
+    }
+  }
+  return best <= GRIP_SNAP_PX ? anchor : nearest;
+}
+
+function resolveHandId(candidate: string, anchor: { x: number; y: number }, runtime: RigRuntime): JointId | null {
+  const hands: JointId[] = ["left_hand", "right_hand"];
+  const available = hands.filter((id) => runtime.restJoint(id) !== null);
+  if (available.includes(candidate as JointId)) return candidate as JointId;
+  return resolveBoneId(candidate, anchor, runtime, available);
+}
+
 export function resolveBoneId(
   candidate: string,
   anchor: { x: number; y: number },
   runtime: RigRuntime,
-): JointId | null {
-  const known: JointId[] = [
+  known: JointId[] = [
     "left_foot",
     "right_foot",
     "left_hand",
@@ -196,7 +254,8 @@ export function resolveBoneId(
     "right_elbow",
     "head",
     "torso",
-  ];
+  ],
+): JointId | null {
   const existing = known.filter((id) => runtime.restJoint(id) !== null);
   const exact = existing.find((id) => id === candidate);
   if (exact) return exact;

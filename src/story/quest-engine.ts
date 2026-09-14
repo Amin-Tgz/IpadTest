@@ -81,6 +81,12 @@ export const QUESTS: Record<string, QuestDefinition> = {
   },
 };
 
+export const FISH_ENDING_LINE: DialogueLine = {
+  bubble: "این ماهی از کفش‌هام هم کوچیک‌تره!",
+  spoken: "اِ؟ این ماهی از کفش‌هام هم کوچیک‌تره!",
+  emotion: "protesting",
+};
+
 const SHOES_FAILURES = [
   "هوم... پای دیگه‌ام هم کفش می‌خواد.",
   "اِ، این یکی کمی از پام دوره.",
@@ -189,9 +195,7 @@ export class QuestEngine {
       case "FISHING":
         if (event.type === "fish_sequence_done") {
           this.state = "ENDING";
-          this.queueBubbles([
-            { bubble: "این ماهی از کفش‌هام هم کوچیک‌تره!", spoken: "اِ؟ این ماهی از کفش‌هام هم کوچیک‌تره!", emotion: "protesting" },
-          ], () => this.command({ type: "ending", text: "حالا نوبت دنیای توست." }));
+          this.queueBubbles([FISH_ENDING_LINE], () => this.command({ type: "ending", text: "حالا نوبت دنیای توست." }));
         }
         break;
 

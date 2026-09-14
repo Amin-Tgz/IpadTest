@@ -87,6 +87,17 @@ export const LIVING_LINE_HERO: LivingLineHeroDefinition = {
   attachmentAnchors: ["left_hand", "right_hand", "left_foot", "right_foot", "head"],
   paths: [
     {
+      id: "hero_ponytail",
+      part: "hair",
+      width: 4.2,
+      points: join(
+        cubic({ x: -21, y: -133 }, { x: -36, y: -151 }, { x: -60, y: -141 }, { x: -60, y: -113 }, 12),
+        cubic({ x: -60, y: -113 }, { x: -60, y: -103 }, { x: -52, y: -100 }, { x: -49, y: -106 }, 5),
+        cubic({ x: -49, y: -106 }, { x: -46, y: -118 }, { x: -36, y: -128 }, { x: -24, y: -130 }, 10),
+      ),
+    },
+    { id: "hero_ponytail_tie", part: "hair", width: 4.2, points: loop(-22, -132, 3.4, 4.4, 10) },
+    {
       id: "hero_head_loop",
       part: "head",
       width: 4.4,

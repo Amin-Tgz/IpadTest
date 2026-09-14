@@ -21,7 +21,7 @@ import { QuestEngine, type StoryCommand } from "../story/quest-engine.js";
 import { PondScene } from "../world/pond-scene.js";
 import { Walker, easeToward } from "../world/walker.js";
 import type { Attachment } from "../character/attachments.js";
-import { attachmentWorldPoints, buildAttachmentFromObject } from "../character/attachments.js";
+import { aimHeldTool, attachmentWorldPoints, buildAttachmentFromObject, isHandHeld, restCharacterHeight } from "../character/attachments.js";
 import { captureViewport, captureDelta } from "../ai/capture.js";
 import { analyzeDrawing } from "../ai/ai-client.js";
 import { imageToWorldX, imageToWorldY, worldToImage, type CaptureMapping } from "../ai/normalization.js";
@@ -33,14 +33,14 @@ import { ConversationHistory, type ConversationEntry } from "../story/conversati
 import { PALETTE, BASE_LINE_WIDTH, BASE_LINE_Y_RATIO } from "./constants.js";
 import { createDiagnostics } from "./diagnostics.js";
 import { PhaserWorldController } from "../world/phaser-world.js";
-import { farthestToolPoint, fishingHookPosition, jumpDestination, movementDestination } from "../world/interaction-geometry.js";
+import { dropLanding, farthestToolPoint, fishingHookPosition, jumpDestination, movementDestination } from "../world/interaction-geometry.js";
 import { REPAIR_PARTS, SegmentRepairEditor, partColor, type RepairPart } from "../character/segment-repair.js";
 import { WorldEntityRegistry, type WorldEntity } from "../world/world-entity.js";
 import type { PhysicsShape } from "../world/phaser-world.js";
 import { hasReviewableChanges, nextReviewCheckpoint, temporaryReviewStrokeIds } from "./manual-review.js";
 import { validateActionRequest } from "../ai/action-protocol.js";
 import { installLivingLineHero, LIVING_LINE_HERO_ID, type HeroVoicePreset } from "../character/living-line-hero.js";
-import { QUESTS, type QuestState } from "../story/quest-engine.js";
+import { FISH_ENDING_LINE, QUESTS, type QuestState } from "../story/quest-engine.js";
 import { normalizeShoeCandidates, ShoeTutorialProgress } from "../story/shoe-tutorial.js";
 import { resolveObjectStrokes } from "../world/object-strokes.js";
 import { MovableWorldObject, type MovableObjectTransform } from "../world/ladder-rescue.js";
@@ -50,6 +50,8 @@ import { RescueCoordinator } from "../world/rescue-coordinator.js";
 import { inferredPhysicsShape, resolveMovementIntent } from "../ai/movement-intent.js";
 import { drawnSurface, type DrawnSurface } from "../world/physics-geometry.js";
 import { VehicleRide, vehicleLayout, type VehicleHints, type VehicleLayout } from "../world/vehicle-ride.js";
+
+const SHOES_COMPLETE_LINE = "چه خفن! حالا هر دو پام کفش دارن؛ بریم!";
 
 const appEl = (() => {
   const el = document.getElementById("app");
@@ -101,6 +103,7 @@ const speech = new GeneratedSpeech((event, detail) => {
     }).catch(() => void 0);
   }
 });
+document.addEventListener("pointerdown", () => speech.keepAlive(), { capture: true, passive: true });
 const idMap = new IdMap();
 const storage = createSessionStorage();
 const worldEntities = new WorldEntityRegistry();
@@ -149,6 +152,7 @@ let analysisInFlight = false;
 let groundChangePending = false;
 let pendingDetected: DrawingAnalysis | null = null;
 let pendingSourceStrokeIds = new Set<string>();
+let pendingStrokeIdsByObject: string[][] = [];
 let lastPencil: PencilEvent | null = null;
 let pencilDown = false;
 let lastFrame = performance.now();
@@ -434,13 +438,17 @@ async function restoreSession(): Promise<boolean> {
       quest.restore(restoredState);
       beginAwaitingDrawing("draw_fishing_tool", false);
     } else if (["REQUEST_TOOL", "EQUIP_TOOL", "FISHING"].includes(restoredState)) {
+      // The hero asks for the tool again, so an earlier one must not stay in hand.
+      removeHandTools();
       quest.restore("AWAIT_TOOL");
       beginAwaitingDrawing("draw_fishing_tool", false);
     } else if (restoredState === "ENDING") {
       quest.restore(restoredState);
-      // The fishing story is over: the world is plain ground again.
+      // The fishing story is over: the world is plain ground again, and a save
+      // taken during the last line may still hold the rod.
       pond = null;
       fishingLine = null;
+      removeHandTools();
       startFreePlay(false);
     } else if (restoredState === "EQUIP_SHOES") {
       quest.restore("AWAIT_SHOES");
@@ -635,6 +643,7 @@ async function resolveDrawingAttempt(): Promise<void> {
       pendingSourceStrokeIds = new Set(reviewSourceStrokeIds);
       lastFullMapping = full.mapping;
       const registered = registerWorldObjects(analysis, full.mapping, reviewSourceStrokeIds);
+      pendingStrokeIdsByObject = registered.strokeIdsByObject;
       const bubbleText = looksPersian(analysis.reaction.bubble)
         ? analysis.reaction.bubble
         : "دیدمش! بذار ببینم باهاش چی کار می‌شه کرد…";
@@ -648,7 +657,7 @@ async function resolveDrawingAttempt(): Promise<void> {
       } else if (goalId === "draw_shoes") {
         const addedShoes = equipTutorialShoes(analysis, full.mapping, registered.strokeIdsByObject);
         if (shoeProgress.complete) {
-          const successBubble = "چه خفن! حالا هر دو پام کفش دارن؛ بریم!";
+          const successBubble = SHOES_COMPLETE_LINE;
           quest.trigger({
             type: "drawing_validated",
             action: "equip_shoes",
@@ -676,6 +685,9 @@ async function resolveDrawingAttempt(): Promise<void> {
         quest.trigger({ type: "drawing_invalid", message: bubbleText });
         beginAwaitingDrawing(goalId, false);
       } else {
+        // A move, climb, or ride is spoken only on arrival; generate the voice
+        // while the hero is still on the way.
+        void speech.prime({ text: spokenText, preset: analysis.reaction.emotion });
         equipDetectedObjects(analysis, full.mapping, registered.strokeIdsByObject);
         walkToDrawingReaction(analysis, registered.entityIds, bubbleText, spokenText);
         beginAwaitingDrawing("free_draw", true);
@@ -1113,8 +1125,10 @@ function executeAIAction(action: AIActionRequest | null, entityIds: string[]): b
       let landingX: number | null = null;
       if (destination.kind === "toward") landingX = destination.x;
       else if (destination.kind === "drop") {
-        landingX = phaserWorld?.dropLandingX(destination.direction)
-          ?? (destination.direction !== null && root ? root.x + destination.direction * 180 : null);
+        const edge = phaserWorld?.dropLandingX(destination.direction) ?? null;
+        landingX = destination.towardX !== undefined
+          ? dropLanding(root?.x ?? 0, edge, destination.towardX)
+          : edge ?? (destination.direction !== null && root ? root.x + destination.direction * 180 : null);
       }
       if (landingX === null) {
         if (!phaserWorld?.jump()) {
@@ -1334,7 +1348,7 @@ quest.onCommand = (command: StoryCommand) => {
       break;
     case "attach_rod":
       if (pendingDetected && lastFullMapping) {
-        equipDetectedObjects(pendingDetected, lastFullMapping);
+        equipFishingTool(pendingDetected, lastFullMapping, pendingStrokeIdsByObject);
       }
       break;
     case "cast_sequence":
@@ -1347,17 +1361,64 @@ quest.onCommand = (command: StoryCommand) => {
   scheduleSave();
 };
 
-function putAwayHeldTools(): void {
-  const tools = attachments.filter((attachment) => attachment.kind === "held_tool");
-  if (tools.length === 0) return;
-  attachments = attachments.filter((attachment) => attachment.kind !== "held_tool");
+const FISHING_TOOL = /rod|net|spear|magnet|pole|hook|قلاب|تور|نیزه|آهنربا|چوب/i;
+const FISHING_TOOL_ANGLE = -55;
+
+// The tutorial tool always goes in the right hand, gripped at the end of the
+// ink nearest that hand and raised toward the pond, whatever joint, anchor, or
+// category the provider reported.
+function equipFishingTool(analysis: DrawingAnalysis, mapping: CaptureMapping, strokeIdsByObject: string[][]): void {
+  if (!rigRuntime || analysis.objects.length === 0) return;
+  const hand = rigRuntime.jointWorld("right_hand");
+  if (!hand) return;
+  const preferred = analysis.objects.findIndex((object) => object.category === "held_tool" || FISHING_TOOL.test(object.type));
+  const index = preferred >= 0 ? preferred : 0;
+  const object = analysis.objects[index];
+  const tool = buildAttachmentFromObject(
+    {
+      type: object.type,
+      category: "held_tool",
+      attachTo: "right_hand",
+      anchor: hand,
+      boundingBox: {
+        x: imageToWorldX(object.boundingBox.x, mapping),
+        y: imageToWorldY(object.boundingBox.y, mapping),
+        width: object.boundingBox.width / mapping.scale,
+        height: object.boundingBox.height / mapping.scale,
+      },
+    },
+    store, idMap, rigRuntime, index, pendingSourceStrokeIds, 30, new Set(strokeIdsByObject[index] ?? []),
+  );
+  diagnostics.info("fishing_tool_equipped", {
+    type: object.type,
+    providerAttachTo: object.attachTo,
+    providerCategory: object.category,
+    bone: tool?.boneId ?? null,
+    strokes: tool?.sourceStrokeIds.length ?? 0,
+  });
+  if (!tool) return;
+  attachments.push(aimHeldTool(tool, FISHING_TOOL_ANGLE, restCharacterHeight(rigRuntime) * 1.4));
+  pendingDetected = null;
+  pendingSourceStrokeIds.clear();
+}
+
+function removeHandTools(): { count: number; strokes: number } {
+  const tools = attachments.filter(isHandHeld);
+  if (tools.length === 0) return { count: 0, strokes: 0 };
+  attachments = attachments.filter((attachment) => !isHandHeld(attachment));
   const toolStrokeIds = new Set(tools.flatMap((tool) => tool.sourceStrokeIds));
   toolStrokeIds.forEach((id) => store.deactivate(id));
   worldEntities.removeByStrokeIds(toolStrokeIds).forEach((id) => phaserWorld?.removeEntity(id));
+  return { count: tools.length, strokes: toolStrokeIds.size };
+}
+
+function putAwayHeldTools(): void {
+  const removed = removeHandTools();
+  if (removed.count === 0) return;
   const hand = rigRuntime?.jointWorld("right_hand");
   if (hand) particles.spawnDust(hand.x, hand.y, 8);
   conversation.append("system", "action", "The fishing is over: the pond is gone and the hero put the fishing tool away; the shoes stay on.");
-  diagnostics.info("held_tools_put_away", { count: tools.length, strokes: toolStrokeIds.size });
+  diagnostics.info("held_tools_put_away", removed);
   scheduleSave();
 }
 
@@ -2077,6 +2138,8 @@ speech.preload([
     })),
   ),
   { text: "اوه! افتادم... یک نردبان پله‌پله برام بکش تا بیام بالا.", preset: "sad", audioUrl: "/audio/hero/ladder-fall.pwa" },
+  { text: SHOES_COMPLETE_LINE, preset: "delighted" },
+  { text: FISH_ENDING_LINE.spoken, preset: FISH_ENDING_LINE.emotion },
 ]);
 
 if (typeof navigator !== "undefined" && "serviceWorker" in navigator && import.meta.env.PROD) {

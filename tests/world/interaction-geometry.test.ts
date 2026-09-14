@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { farthestToolPoint, fishingHookPosition, jumpDestination, movementDestination } from "../../src/world/interaction-geometry.js";
+import { dropLanding, farthestToolPoint, fishingHookPosition, jumpDestination, movementDestination } from "../../src/world/interaction-geometry.js";
 
 describe("interaction geometry", () => {
   it("jumps to the tip of the arrow the child drew, not its middle", () => {
@@ -15,6 +15,23 @@ describe("interaction geometry", () => {
     expect(jumpDestination(200, "right", null)).toEqual({ kind: "drop", direction: 1 });
     expect(jumpDestination(200, "down", null)).toEqual({ kind: "drop", direction: null });
     expect(jumpDestination(200, null, null)).toEqual({ kind: "hop" });
+  });
+
+  it("jumps off the edge toward a down arrow, even one drawn right beside the hero", () => {
+    const arrow = { bounds: { x: 646, y: 401, width: 44, height: 137 }, physical: false };
+    expect(jumpDestination(580, "down", arrow)).toEqual({ kind: "drop", direction: 1, towardX: 668 });
+    const beside = { bounds: { x: 572, y: 380, width: 20, height: 60 }, physical: false };
+    expect(jumpDestination(580, "down", beside)).toEqual({ kind: "drop", direction: null, towardX: 582 });
+  });
+
+  it("lands past the drop edge, or at the arrow when it points farther than the edge", () => {
+    expect(dropLanding(580, 690, 668)).toBe(690);
+    expect(dropLanding(580, 690, 760)).toBe(760);
+    expect(dropLanding(580, 690, 582)).toBe(690);
+    expect(dropLanding(580, 410, 668)).toBe(410);
+    expect(dropLanding(300, null, 380)).toBe(380);
+    expect(dropLanding(300, null, 310)).toBeNull();
+    expect(dropLanding(300, 500)).toBe(500);
   });
 
   it("targets the far edge when the child asks to cross a bridge", () => {

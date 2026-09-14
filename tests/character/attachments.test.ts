@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { resolveBoneId, toLocalPoints, buildAttachmentFromObject, wearableFitScale, type DetectedObject } from "../../src/character/attachments.js";
+import {
+  aimHeldTool,
+  attachmentWorldPoints,
+  buildAttachmentFromObject,
+  isHandHeld,
+  resolveBoneId,
+  toLocalPoints,
+  wearableFitScale,
+  type Attachment,
+  type DetectedObject,
+} from "../../src/character/attachments.js";
+import { IDENTITY_ENTITY_TRANSFORM, transformLocalPoint } from "../../src/character/entity-transform.js";
+import { installLivingLineHero } from "../../src/character/living-line-hero.js";
 import { buildRig } from "../../src/character/rig-builder.js";
 import { RigRuntime } from "../../src/character/rig-runtime.js";
 import { StrokeStore } from "../../src/drawing/stroke-store.js";
@@ -209,5 +221,84 @@ describe("buildAttachmentFromObject", () => {
     )!;
     expect(attachment.strokes[0].localPoints).toHaveLength(3);
     expect(Math.max(...attachment.strokes[0].localPoints.map((point) => point.y))).toBe(10);
+  });
+
+  it("holds a tool by the end of the ink nearest the hand when the provider anchors it on the hand joint", () => {
+    const store = new StrokeStore();
+    store.add({
+      id: "rod",
+      points: [
+        { x: 300, y: 130, pressure: 0.5, time: 0 },
+        { x: 360, y: 90, pressure: 0.5, time: 1 },
+        { x: 420, y: 46, pressure: 0.5, time: 2 },
+      ],
+      color: "#F7F5EE", baseWidth: 4, tool: "pen", createdAt: 0, worldSpace: true, entityId: null, active: true, groupId: null,
+    });
+    const rt = runtime();
+    const idMap = { sampleStrokesInRegion: () => new Set(["rod"]) } as unknown as IdMap;
+    const attachment = buildAttachmentFromObject(
+      { type: "fishing_rod", category: "held_tool", boundingBox: { x: 290, y: 40, width: 140, height: 100 }, attachTo: "right_hand", anchor: { x: 160, y: 250 } },
+      store, idMap, rt, 0, new Set(["rod"]),
+    )!;
+    const hand = rt.jointWorld("right_hand")!;
+    const [grip] = attachmentWorldPoints(attachment, rt)[0];
+    expect(grip.x).toBeCloseTo(hand.x, 6);
+    expect(grip.y).toBeCloseTo(hand.y, 6);
+  });
+});
+
+describe("held tools", () => {
+  it("go in a hand even when the provider attaches them to the head", () => {
+    const store = new StrokeStore();
+    const hero = new RigRuntime(buildRig(installLivingLineHero(store, 300, 500), store), () => 0);
+    store.add({
+      id: "rod",
+      points: [{ x: 290, y: 300, pressure: 0.5, time: 0 }, { x: 360, y: 250, pressure: 0.5, time: 1 }],
+      color: "#F7F5EE", baseWidth: 4, tool: "pen", createdAt: 0, worldSpace: true, entityId: null, active: true, groupId: null,
+    });
+    const idMap = { sampleStrokesInRegion: () => new Set(["rod"]) } as unknown as IdMap;
+    const head = hero.jointWorld("head")!;
+    const attachment = buildAttachmentFromObject(
+      { type: "fishing_rod", category: "held_tool", boundingBox: { x: 285, y: 245, width: 80, height: 60 }, attachTo: "head", anchor: head },
+      store, idMap, hero, 0, new Set(["rod"]),
+    )!;
+    expect(["left_hand", "right_hand"]).toContain(attachment.boneId);
+  });
+});
+
+describe("aimHeldTool", () => {
+  const rod = (points: Array<{ x: number; y: number }>): Attachment => ({
+    id: "tool", kind: "held_tool", boneId: "right_hand", sourceStrokeIds: ["rod"],
+    strokes: [{ sourceStrokeId: "rod", localPoints: points, color: "#F7F5EE", baseWidth: 4 }],
+    localTransform: { ...IDENTITY_ENTITY_TRANSFORM }, visible: true, drawOrder: 7,
+  });
+
+  it("turns the tool about the grip so its far end points the requested way", () => {
+    const aimed = aimHeldTool(rod([{ x: 0, y: 0 }, { x: -60, y: 80 }]), -55, 500);
+    const tip = transformLocalPoint({ x: -60, y: 80 }, aimed.localTransform);
+    expect(Math.atan2(tip.y, tip.x) * 180 / Math.PI).toBeCloseTo(-55, 6);
+    expect(Math.hypot(tip.x, tip.y)).toBeCloseTo(100, 6);
+    expect(transformLocalPoint({ x: 0, y: 0 }, aimed.localTransform)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("shortens an oversized tool but never enlarges a small one", () => {
+    const long = aimHeldTool(rod([{ x: 0, y: 0 }, { x: 400, y: 0 }]), 0, 200);
+    expect(transformLocalPoint({ x: 400, y: 0 }, long.localTransform).x).toBeCloseTo(200, 6);
+    const short = aimHeldTool(rod([{ x: 0, y: 0 }, { x: 40, y: 0 }]), 0, 200);
+    expect(short.localTransform.scaleX).toBe(1);
+  });
+});
+
+describe("isHandHeld", () => {
+  const attachment = (kind: Attachment["kind"], boneId: Attachment["boneId"]): Attachment => ({
+    id: "a", kind, boneId, sourceStrokeIds: [], strokes: [], localTransform: { ...IDENTITY_ENTITY_TRANSFORM }, visible: true, drawOrder: 7,
+  });
+
+  it("counts anything in a hand as held, whatever the provider called it", () => {
+    expect(isHandHeld(attachment("held_tool", "head"))).toBe(true);
+    expect(isHandHeld(attachment("wearable", "right_hand"))).toBe(true);
+    expect(isHandHeld(attachment("wearable", "left_hand"))).toBe(true);
+    expect(isHandHeld(attachment("wearable", "left_foot"))).toBe(false);
+    expect(isHandHeld(attachment("wearable", "head"))).toBe(false);
   });
 });

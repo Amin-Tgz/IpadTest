@@ -45,6 +45,48 @@ describe("authored living-line hero", () => {
     expect(rig.face.mouth?.points.length).toBeGreaterThan(0);
   });
 
+  it("wears a ponytail tied to the head", () => {
+    expect(LIVING_LINE_HERO.paths.find((path) => path.id === "hero_ponytail")?.part).toBe("hair");
+    const store = new StrokeStore();
+    const rig = buildRig(installLivingLineHero(store, 300, 500), store);
+    for (const id of ["hero_ponytail", "hero_ponytail_tie"]) {
+      const stroke = rig.strokes.find((entry) => entry.id === id);
+      expect(stroke).toBeDefined();
+      expect(stroke!.points.every((point) => point.influences.every((influence) => influence.jointId === "head"))).toBe(true);
+    }
+  });
+
+  it("lets the ponytail trail behind a moving hero and settle once it stops", () => {
+    let now = 0;
+    const store = new StrokeStore();
+    const runtime = new RigRuntime(buildRig(installLivingLineHero(store, 300, 500), store), () => now);
+    runtime.applyPose(EMPTY_POSE);
+    const index = runtime.strokes.findIndex((stroke) => stroke.id === "hero_ponytail");
+    const tipOffset = () => {
+      const points = runtime.transformedStrokePoints()[index];
+      const pivot = points[0];
+      const tip = points.reduce((far, point) =>
+        Math.hypot(point.x - pivot.x, point.y - pivot.y) > Math.hypot(far.x - pivot.x, far.y - pivot.y) ? point : far, pivot);
+      return { x: tip.x - pivot.x, y: tip.y - pivot.y };
+    };
+    const rest = tipOffset();
+    for (let frame = 0; frame < 30; frame++) {
+      now += 16;
+      runtime.moveEntityTo(runtime.entityTransform.x + 5, runtime.entityTransform.y);
+      tipOffset();
+    }
+    const moving = tipOffset();
+    expect(moving.x).toBeLessThan(rest.x - 2);
+    expect(Math.hypot(moving.x - rest.x, moving.y - rest.y)).toBeGreaterThan(4);
+    for (let frame = 0; frame < 250; frame++) {
+      now += 16;
+      tipOffset();
+    }
+    const settled = tipOffset();
+    expect(settled.x).toBeCloseTo(rest.x, 1);
+    expect(settled.y).toBeCloseTo(rest.y, 1);
+  });
+
   it("aims the nearer authored index finger at a target and clears cleanly", () => {
     const store = new StrokeStore();
     const runtime = new RigRuntime(buildRig(installLivingLineHero(store, 300, 500), store), () => 0);
